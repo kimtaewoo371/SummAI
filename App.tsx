@@ -93,10 +93,8 @@ const App: React.FC = () => {
       } catch (err) {
         console.error('❌ Initialization failed:', err);
       } finally {
-        // 2. 어떤 경로로든(성공/실패/세션없음) 초기화가 끝나면 로딩 반드시 해제
         if (isMounted) {
-          console.log('✅ Setting loading to FALSE');
-          setLoading(false);
+          setLoading(false); // 이 코드가 실행되어야 무한 로딩이 풀립니다.
         }
       }
     };
