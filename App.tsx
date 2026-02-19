@@ -93,12 +93,13 @@ const App: React.FC = () => {
       } catch (err) {
         console.error('❌ Initialization failed:', err);
       } finally {
+        // 🔥 이 3줄이 반드시 들어가야 합니다. 
+        // 성공하든 에러가 나든 세션이 없든, 초기화가 끝났으면 로딩을 풀어야 화면이 나옵니다.
         if (isMounted) {
-          setLoading(false); // 이 코드가 실행되어야 무한 로딩이 풀립니다.
+          setLoading(false);
         }
       }
     };
-
     initializeAuth();
 
     // 인증 상태 변화 감지
