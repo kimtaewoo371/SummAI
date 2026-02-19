@@ -17,7 +17,7 @@ import {
   signOut
 } from './services/supabaseClient';
 
-
+const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
@@ -35,7 +35,6 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
 
-  // 사용량 상태 (일/월 현황 + 한도)
   const [usageInfo, setUsageInfo] = useState<{
     daily: number;
     monthly: number;
@@ -51,15 +50,28 @@ const App: React.FC = () => {
 
   // ─── 초기 인증 & 프로필 로드 ───
   useEffect(() => {
-    if (!isReady || !client) { setLoading(true); return; }
+    console.log('🔍 App useEffect triggered - isReady:', isReady, 'client:', !!client);
+    
+    if (!isReady || !client) { 
+      console.log('⏳ Waiting for Supabase... isReady:', isReady, 'client:', !!client);
+      setLoading(true); 
+      return; 
+    }
 
+    console.log('✅ Supabase ready, starting initialization...');
     let isMounted = true;
 
     const initializeAuth = async () => {
       try {
+        console.log('🔍 Getting session...');
         const { data: { session } } = await client.auth.getSession();
+        console.log('🔍 Session result:', session ? 'User logged in' : 'No session');
+        
         if (session?.user) {
+          console.log('🔍 Fetching profile for user:', session.user.id);
           const profile = await getProfile(client, session.user.id);
+          console.log('🔍 Profile result:', profile ? 'Loaded' : 'null');
+          
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
@@ -75,17 +87,23 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
+        } else {
+          console.log('✅ No user session, continuing as anonymous');
         }
       } catch (err) {
-        console.error('Auth init error:', err);
+        console.error('❌ Auth init error:', err);
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          console.log('✅ Setting loading to FALSE');
+          setLoading(false);
+        }
       }
     };
 
     initializeAuth();
 
     const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
+      console.log('🔍 Auth state changed:', event);
       if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
         const profile = await getProfile(client, session.user.id);
         if (isMounted && profile) {
@@ -111,10 +129,13 @@ const App: React.FC = () => {
       }
     });
 
-    return () => { isMounted = false; subscription.unsubscribe(); };
+    return () => { 
+      console.log('🔍 App useEffect cleanup');
+      isMounted = false; 
+      subscription.unsubscribe(); 
+    };
   }, [isReady, client]);
 
-  // ─── 분석 실행 ───
   const handleProcess = useCallback(async (text: string) => {
     if (!isReady || !client) {
       setError('System is initializing. Please wait...');
@@ -124,22 +145,28 @@ const App: React.FC = () => {
     setError(null);
     setResult(null);
 
-  
+    if (!user.isLoggedIn) {
+      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const usage = parseInt(localStorage.getItem(todayKey) || '0');
+      if (usage >= ANONYMOUS_DAILY_LIMIT) {
+        setStep('recharge');
+        return;
+      }
+    }
 
-    // 로그인 유저: 프론트 사전 체크 (서버에서 최종 확인)
     if (user.isLoggedIn && usageInfo) {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
         setError(
-          `Daily limit exceeded (${usageInfo.daily}/${usageInfo.dailyLimit}).` +
-          (user.isPro ? ' It resets tomorrow.' : ' Upgrade to Pro for 100 uses/day.')
+          `일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).` +
+          (user.isPro ? ' 내일 초기화됩니다.' : ' Pro로 업그레이드하면 100회/일 사용 가능합니다.')
         );
         if (!user.isPro) setStep('recharge');
         return;
       }
       if (usageInfo.monthly >= usageInfo.monthlyLimit) {
         setError(
-          `Monthly limit exceeded (${usageInfo.monthly}/${usageInfo.monthlyLimit}).` +
-          (user.isPro ? ' It resets next month.' : ' Upgrade to Pro for 3,000 uses/month.')
+          `월간 한도 초과 (${usageInfo.monthly}/${usageInfo.monthlyLimit}).` +
+          (user.isPro ? ' 다음달 초기화됩니다.' : ' Pro로 업그레이드하면 3,000회/월 사용 가능합니다.')
         );
         if (!user.isPro) setStep('recharge');
         return;
@@ -157,7 +184,6 @@ const App: React.FC = () => {
         setStep('result');
 
         if (user.isLoggedIn && user.userId) {
-          // 서버에서 한도 재검증 + 카운트 증가
           const updatedProfile = await incrementUsageCount(
             client, user.userId, text.length, data.resultText?.length || 0, 0
           );
@@ -168,20 +194,22 @@ const App: React.FC = () => {
             monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
           });
           setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
+        } else {
+          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          const usage = parseInt(localStorage.getItem(todayKey) || '0');
+          localStorage.setItem(todayKey, (usage + 1).toString());
+          setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
         }
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
 
       if (message.includes('DAILY_LIMIT_EXCEEDED')) {
-        setError(user.isPro ? 'You\'ve reached your daily limit. It resets tomorrow.' : 'You\'ve reached your daily limit. Upgrade to Pro.');
+        setError(user.isPro ? '일일 한도 초과. 내일 초기화됩니다.' : '일일 한도 초과. Pro로 업그레이드하세요.');
         if (!user.isPro) setStep('recharge');
       } else if (message.includes('MONTHLY_LIMIT_EXCEEDED')) {
-        setError(user.isPro ? 'You\'ve reached your monthly limit. It resets next month.' : 'You\'ve reached your monthly limit. Upgrade to Pro.');
+        setError(user.isPro ? '월간 한도 초과. 다음달 초기화됩니다.' : '월간 한도 초과. Pro로 업그레이드하세요.');
         if (!user.isPro) setStep('recharge');
-      } 
-        else if (message.includes('ANONYMOUS_LIMIT_EXCEEDED')) {
-        setStep('recharge');
       } else {
         setError(message);
         setStep('input');
@@ -199,7 +227,6 @@ const App: React.FC = () => {
     catch (err) { console.error('Sign out error:', err); }
   };
 
-  // 결제 성공 후 프로필 다시 로드해서 UI 반영
   const handlePaymentSuccess = useCallback(async (_subscriptionId: string) => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
@@ -216,7 +243,10 @@ const App: React.FC = () => {
     setStep('input');
   }, [client, user.userId]);
 
+  console.log('🔍 App render - loading:', loading, 'isReady:', isReady);
+
   if (loading || !isReady) {
+    console.log('🔍 Showing loading spinner - loading:', loading, 'isReady:', isReady);
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
@@ -224,16 +254,18 @@ const App: React.FC = () => {
     );
   }
 
-  // 네비바 남은 횟수
+  console.log('✅ App ready, rendering main UI');
+
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
+    : !user.isLoggedIn
+    ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount)
     : null;
 
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
 
-        {/* 네비게이션 */}
         <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
             <div className="w-8 h-8 bg-black rounded flex items-center justify-center">
@@ -270,7 +302,6 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        {/* 메인 */}
         <main className="pt-16">
           {step === 'input' && (
             <>
