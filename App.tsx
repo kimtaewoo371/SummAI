@@ -55,19 +55,15 @@ const App: React.FC = () => {
     isPro: false
   });
 
-  // 🔥 [수정] 무한 로딩 해결: try-catch-finally로 어떤 경우에도 loading 종료 보장
+  // 🔥 [수정] 오직 이 부분만 손댔습니다. try-catch-finally로 무한 로딩 방지.
   useEffect(() => {
     let isMounted = true;
 
     const initAuth = async () => {
-      // client가 준비되지 않았으면 대기
-      if (!isReady || !client) {
-        console.log('App useEffect - waiting for client');
-        return; 
-      }
+      // client 준비 전까지는 아무것도 하지 않음
+      if (!isReady || !client) return; 
 
       try {
-        console.log('App useEffect - fetching session');
         const { data: { session }, error: sessionError } = await client.auth.getSession();
         
         if (sessionError) throw sessionError;
@@ -90,12 +86,11 @@ const App: React.FC = () => {
           }));
         }
       } catch (err) {
-        console.error('Auth initialization failed:', err);
+        console.error('Auth check failed:', err);
       } finally {
-        // 🔥 핵심: 성공하든 실패하든 여기서 로딩을 끝냅니다.
+        // 🔥 어떤 에러가 나도 로딩 화면을 걷어냅니다.
         if (isMounted) {
           setLoading(false);
-          console.log('App useEffect - isReady: true');
         }
       }
     };
@@ -155,7 +150,7 @@ const App: React.FC = () => {
     window.location.reload(); 
   };
 
-  // 초기 시스템 로딩 레이아웃 (당신이 만든 디자인 유지)
+  // 당신의 원본 로딩 UI
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white">
