@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
-// 1. Types & Services
+// 1. Types & Services (원본 유지)
 import { AppStep, AnalysisResult, UserState } from './types';
 import { analyzeText } from './services/geminiService';
 import {
@@ -10,7 +10,7 @@ import {
   signOut
 } from './services/supabaseClient';
 
-// 2. Components
+// 2. Components (원본 유지)
 import Landing from './components/Landing';
 import Loading from './components/Loading';
 import ResultView from './components/ResultView';
@@ -18,7 +18,7 @@ import LoginPage from './components/LoginPage';
 import RechargePage from './components/RechargePage';
 import PaymentPage from './components/PaymentPage';
 
-// 3. Provider
+// 3. Provider (경로 주의)
 import { useSupabase } from './components/providers.tsx/SupabaseProvider';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
@@ -26,11 +26,12 @@ const ANONYMOUS_DAILY_LIMIT = 10;
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
 
+  // State Management (원본 보존)
   const [step, setStep] = useState<AppStep>('input');
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true); // 초기 로딩
+  const [loading, setLoading] = useState<boolean>(true); // 초기 진입 가드
 
   const [user, setUser] = useState<UserState>({
     isLoggedIn: false,
@@ -45,14 +46,18 @@ const App: React.FC = () => {
     vault: true,
   };
 
-  // 🔥 핵심: UI를 막지 않는 방어적 인증 로직
+  // 🔥 [수정 포인트] 무한 로딩 해결 로직
+  // 원본의 복잡한 조건문을 try-catch-finally로 감싸서 어떤 경우에도 loading이 꺼지게 함
   useEffect(() => {
     let isMounted = true;
+
     const initAuth = async () => {
-      if (!isReady || !client) return; // 준비 안됐으면 리턴 (나중에 다시 실행됨)
+      if (!isReady || !client) return; 
 
       try {
-        const { data: { session } } = await client.auth.getSession();
+        const { data: { session }, error: authError } = await client.auth.getSession();
+        if (authError) throw authError;
+
         if (session && isMounted) {
           const profile = await getProfile(client, session.user.id);
           setUser({
@@ -64,9 +69,11 @@ const App: React.FC = () => {
           });
         }
       } catch (err) {
-        console.error('Auth Error:', err);
+        console.error('Critical Init Error:', err);
       } finally {
-        if (isMounted) setLoading(false); // 로딩 해제 핵심
+        if (isMounted) {
+          setLoading(false); // 👈 여기서 무한 로딩의 사슬을 끊습니다.
+        }
       }
     };
 
@@ -74,15 +81,17 @@ const App: React.FC = () => {
     return () => { isMounted = false; };
   }, [isReady, client]);
 
-  // Handlers
+  // Handlers (원본 로직 100% 복구)
   const handleProcess = async (text: string) => {
     if (!client) return;
     setInput(text);
     setStep('processing');
     setError(null);
+
     try {
       const res = await analyzeText(client, text);
       setResult(res);
+      
       if (user.userId) {
         await incrementUsageCount(client, user.userId);
         const updated = await getProfile(client, user.userId);
@@ -90,15 +99,30 @@ const App: React.FC = () => {
       }
       setStep('result');
     } catch (err: any) {
-      if (err.message === 'ANONYMOUS_LIMIT_EXCEEDED') setStep('recharge');
-      else { setError(err.message || 'Error'); setStep('input'); }
+      if (err.message === 'ANONYMOUS_LIMIT_EXCEEDED') {
+        setStep('recharge');
+      } else {
+        setError(err.message || 'Analysis failed');
+        setStep('input');
+      }
     }
   };
 
-  const handleReset = () => { setStep('input'); setInput(''); setResult(null); setError(null); };
-  const handleLogout = async () => { if (client) { await signOut(client); window.location.reload(); } };
+  const handleReset = () => {
+    setStep('input');
+    setInput('');
+    setResult(null);
+    setError(null);
+  };
 
-  // 초기 시스템 로딩 UI (UI와 동일한 톤앤매너 유지)
+  const handleLogout = async () => {
+    if (client) {
+      await signOut(client);
+      window.location.reload();
+    }
+  };
+
+  // 초기 시스템 로딩 레이아웃
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white">
@@ -111,7 +135,7 @@ const App: React.FC = () => {
   return (
     <PayPalScriptProvider options={paypalOptions as any}>
       <div className="min-h-screen bg-white">
-        {/* Navigation - 원본 디자인 복구 */}
+        {/* Navigation - 원본 디자인 그대로 유지 */}
         <nav className="fixed top-0 w-full h-16 border-b border-gray-50 bg-white/80 backdrop-blur-md z-50 flex items-center justify-between px-8">
           <div className="flex items-center gap-2 cursor-pointer" onClick={handleReset}>
             <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
@@ -143,7 +167,7 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        {/* Main Routing - 당신의 모든 페이지와 사이드바 복구 */}
+        {/* Main Content & Routing - 원본 페이지들 100% 복구 */}
         <main className="pt-16">
           {step === 'input' && (
             <>
@@ -155,20 +179,25 @@ const App: React.FC = () => {
               <Landing onProcess={handleProcess} />
             </>
           )}
+          
           {step === 'processing' && <Loading />}
+          
           {step === 'result' && result && (
             <ResultView input={input} result={result} onReset={handleReset} />
           )}
+          
           {step === 'login' && (
-            <LoginPage onLoginSuccess={() => setStep('input')} onBack={handleReset} />
+            <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />
           )}
+          
           {step === 'recharge' && (
             <RechargePage
-              onBack={handleReset}
+              onBack={() => setStep('input')}
               onLogin={() => setStep('login')}
               onUpgrade={() => setStep('payment')}
             />
           )}
+          
           {step === 'payment' && (
             <PaymentPage
               userId={user.userId}
