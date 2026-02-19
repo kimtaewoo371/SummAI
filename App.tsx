@@ -20,6 +20,7 @@ import {
 const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
+  // useSupabase에서 client를 직접 감시합니다.
   const { client, isReady } = useSupabase();
 
   const paypalOptions = {
@@ -48,22 +49,20 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 초기 인증 및 세션 로드 로직 ───
+  // ─── 인증 및 프로필 로드 (안전성 강화 버전) ───
   useEffect(() => {
     let isMounted = true;
     let authSubscription: any = null;
 
     const initializeAuth = async () => {
-      // 1. 라이브러리 준비 안 됐으면 대기 (단, 무한 대기 방지를 위해 하단에서 타임아웃 처리 가능)
-      if (!isReady || !client) return;
+      // client가 없으면 아직 준비 중이므로 대기
+      if (!client) return;
 
       try {
+        // 세션 확인
         const { data: { session }, error: sessionError } = await client.auth.getSession();
         
-        if (sessionError) {
-          // AbortError(작업 취소)는 에러로 취급하지 않음
-          if (sessionError.name !== 'AbortError') throw sessionError;
-        }
+        if (sessionError && sessionError.name !== 'AbortError') throw sessionError;
         
         if (session?.user && isMounted) {
           const profile = await getProfile(client, session.user.id);
@@ -84,20 +83,14 @@ const App: React.FC = () => {
           }
         }
       } catch (err: any) {
-        // 단순 취소 에러가 아닌 경우에만 기록
-        if (err.name !== 'AbortError') {
-          console.error('❌ Auth initialization failed:', err);
-        }
+        if (err.name !== 'AbortError') console.error('❌ Auth Error:', err);
       } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
+        if (isMounted) setLoading(false);
       }
 
-      // 2. 인증 상태 변경 리스너 등록
+      // 상태 변화 리스너
       const { data } = client.auth.onAuthStateChange(async (event, session) => {
         if (!isMounted) return;
-
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
           const profile = await getProfile(client, session.user.id);
           if (isMounted && profile) {
@@ -119,21 +112,19 @@ const App: React.FC = () => {
 
     initializeAuth();
 
-    // 3. 보험: 3초 후에도 로딩이 안 풀리면 강제 해제 (Supabase 연결 지연 대비)
-    const backupTimer = setTimeout(() => {
-      if (isMounted && loading) {
-        console.warn('⚠️ Safety timeout: Forcing loading to false');
-        setLoading(false);
-      }
-    }, 3000);
+    // 5초 후에도 로딩 중이면 무조건 해제 (네트워크 지연 대비)
+    const safetyTimer = setTimeout(() => {
+      if (isMounted && loading) setLoading(false);
+    }, 5000);
 
     return () => { 
       isMounted = false; 
-      clearTimeout(backupTimer);
+      clearTimeout(safetyTimer);
       if (authSubscription) authSubscription.unsubscribe(); 
     };
-  }, [isReady, client]);
+  }, [client, isReady]); // client 존재 여부를 주요 트리거로 사용
 
+  // ... (handleProcess, handleReset 등 나머지 로직은 동일)
   const handleProcess = useCallback(async (text: string) => {
     if (!client) return;
     setError(null);
@@ -171,7 +162,7 @@ const App: React.FC = () => {
       setError(err.message || 'Analysis failed');
       setStep('input');
     }
-  }, [user, usageInfo, client]);
+  }, [user, client]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -187,7 +178,7 @@ const App: React.FC = () => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
-        setUser(prev => ({ ...prev, isPro: profile.is_pro || false }));
+        setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
       }
     }
     setStep('input');
@@ -234,7 +225,6 @@ const App: React.FC = () => {
             </button>
           </div>
         </nav>
-
         <main className="pt-16">
           {step === 'input' && (
             <>
