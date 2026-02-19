@@ -34,15 +34,9 @@ const App: React.FC = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  /** ⭐️ 앱 전체 Auth Loading Gate */
   const [appLoading, setAppLoading] = useState(true);
 
-  const [usageInfo, setUsageInfo] = useState<{
-    daily: number;
-    monthly: number;
-    dailyLimit: number;
-    monthlyLimit: number;
-  } | null>(null);
+  const [usageInfo, setUsageInfo] = useState<any>(null);
 
   const [user, setUser] = useState<UserState>({
     isLoggedIn: false,
@@ -50,9 +44,7 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  /* =====================================================
-     ⭐️ AUTH INITIALIZATION (Race condition 완전 해결)
-  ===================================================== */
+  // ⭐⭐⭐ AUTH INITIALIZATION (FIXED RACE CONDITION)
   useEffect(() => {
     if (!isReady || !client) return;
 
@@ -89,7 +81,6 @@ const App: React.FC = () => {
         if (isMounted) setAppLoading(false);
       }
 
-      /** 로그인 / 로그아웃 감지 */
       const { data } = client.auth.onAuthStateChange(async (event, session) => {
         if (!isMounted) return;
 
@@ -131,12 +122,10 @@ const App: React.FC = () => {
     };
   }, [isReady]);
 
-  /* =====================================================
-     분석 처리
-  ===================================================== */
+  // ⭐ 분석 실행
   const handleProcess = useCallback(async (text: string) => {
     if (!client) {
-      setError("시스템 초기화 중입니다. 잠시 후 다시 시도해주세요.");
+      setError("시스템 초기화 중입니다.");
       return;
     }
 
@@ -155,7 +144,6 @@ const App: React.FC = () => {
 
     try {
       const data = await analyzeText(client, text);
-
       setResult(data);
       setStep('result');
 
@@ -176,13 +164,19 @@ const App: React.FC = () => {
         });
 
         setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
+      } else {
+        const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+        const usage = parseInt(localStorage.getItem(todayKey) || '0');
+        localStorage.setItem(todayKey, (usage + 1).toString());
+        setUser(prev => ({ ...prev, usageCount: usage + 1 }));
       }
+
     } catch (err: any) {
       console.error(err);
-      setError("분석 중 오류가 발생했습니다.");
+      setError("분석 실패. 다시 시도해주세요.");
       setStep('input');
     }
-  }, [client, user, usageInfo]);
+  }, [user, client, usageInfo]);
 
   const handleReset = () => {
     setResult(null);
@@ -197,9 +191,13 @@ const App: React.FC = () => {
     setStep('input');
   };
 
-  /* =====================================================
-     ⭐️ AUTH LOADING GATE (가장 중요)
-  ===================================================== */
+  const handlePaymentSuccess = async () => {
+    if (!client || !user.userId) return;
+    const profile = await getProfile(client, user.userId);
+    setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
+    setStep('input');
+  };
+
   if (!isReady || appLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -208,32 +206,23 @@ const App: React.FC = () => {
     );
   }
 
-  const remainingDaily = usageInfo
-    ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
-    : Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount);
-
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
 
-        {/* NAV */}
-        <nav className="fixed top-0 left-0 right-0 h-16 border-b bg-white flex items-center justify-between px-8">
-          <div className="font-black text-lg cursor-pointer" onClick={() => setStep('input')}>
-            SummAI
+        <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
+          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
+            <span className="font-black text-lg tracking-tight">SummAI</span>
           </div>
 
           <div className="flex items-center gap-6">
-            <span className="text-xs font-bold text-gray-400">
-              {remainingDaily} Left Today
-            </span>
-
             {user.isLoggedIn ? (
               <>
-                <span className="text-xs text-gray-400">{user.email}</span>
-                <button onClick={handleSignOut} className="text-xs font-bold">Sign Out</button>
+                <span className="text-xs">{user.email}</span>
+                <button onClick={handleSignOut}>Sign Out</button>
               </>
             ) : (
-              <button onClick={() => setStep('login')} className="text-xs font-bold">Log In</button>
+              <button onClick={() => setStep('login')}>Log In</button>
             )}
           </div>
         </nav>
@@ -244,7 +233,7 @@ const App: React.FC = () => {
           {step === 'result' && result && <ResultView input={input} result={result} onReset={handleReset} />}
           {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
           {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
-          {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={() => setStep('input')} onCancel={() => setStep('recharge')} />}
+          {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={handlePaymentSuccess} onCancel={() => setStep('recharge')} />}
         </main>
 
       </div>
