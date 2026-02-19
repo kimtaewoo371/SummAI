@@ -21,19 +21,23 @@ body {
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
+  display: none;
 }
 
 ::-webkit-scrollbar-track {
   background: #f9fafb;
+  display: none;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #d1d5db;
   border-radius: 4px;
+  display: none;
 }
 
 ::-webkit-scrollbar-thumb:hover {
   background: #9ca3af;
+  display: none;
 }
 
 /* Selection Styling */
