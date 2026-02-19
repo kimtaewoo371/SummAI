@@ -31,8 +31,16 @@ export const SupabaseProvider: React.FC<SupabaseProviderProps> = ({ children }) 
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    console.log('🔍 SupabaseProvider useEffect started');
+    
     const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
     const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+    console.log('🔍 Environment check:', {
+      hasUrl: !!supabaseUrl,
+      hasKey: !!supabaseAnonKey,
+      urlPreview: supabaseUrl ? supabaseUrl.substring(0, 30) + '...' : 'MISSING'
+    });
 
     // 🔥 환경변수 검증
     if (!supabaseUrl || !supabaseAnonKey) {
@@ -74,7 +82,7 @@ export const SupabaseProvider: React.FC<SupabaseProviderProps> = ({ children }) 
           </div>
           <p className="text-red-700 mb-4">{error}</p>
           <p className="text-sm text-gray-600">
-            Please check your environment variables in <code className="bg-gray-100 px-2 py-1 rounded">.env.local</code>
+            Please check your environment variables in Vercel Settings
           </p>
         </div>
       </div>
