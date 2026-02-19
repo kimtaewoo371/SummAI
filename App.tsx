@@ -20,7 +20,6 @@ import {
 const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
-  // useSupabase에서 client를 직접 감시합니다.
   const { client, isReady } = useSupabase();
 
   const paypalOptions = {
@@ -49,19 +48,16 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 인증 및 프로필 로드 (안전성 강화 버전) ───
+  // ─── [보강] 인증 및 프로필 로드 (데이터 무결성 확보) ───
   useEffect(() => {
     let isMounted = true;
     let authSubscription: any = null;
 
     const initializeAuth = async () => {
-      // client가 없으면 아직 준비 중이므로 대기
       if (!client) return;
 
       try {
-        // 세션 확인
         const { data: { session }, error: sessionError } = await client.auth.getSession();
-        
         if (sessionError && sessionError.name !== 'AbortError') throw sessionError;
         
         if (session?.user && isMounted) {
@@ -69,7 +65,7 @@ const App: React.FC = () => {
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
-              usageCount: profile.usage_count,
+              usageCount: profile.daily_usage || 0,
               email: profile.email,
               userId: session.user.id,
               isPro: profile.is_pro || false,
@@ -88,7 +84,6 @@ const App: React.FC = () => {
         if (isMounted) setLoading(false);
       }
 
-      // 상태 변화 리스너
       const { data } = client.auth.onAuthStateChange(async (event, session) => {
         if (!isMounted) return;
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
@@ -96,10 +91,16 @@ const App: React.FC = () => {
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
-              usageCount: profile.usage_count,
+              usageCount: profile.daily_usage || 0,
               email: profile.email,
               userId: session.user.id,
               isPro: profile.is_pro || false,
+            });
+            setUsageInfo({
+              daily: profile.daily_usage ?? 0,
+              monthly: profile.monthly_usage ?? 0,
+              dailyLimit: profile.is_pro ? 100 : 10,
+              monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
         } else if (event === 'SIGNED_OUT') {
@@ -112,7 +113,6 @@ const App: React.FC = () => {
 
     initializeAuth();
 
-    // 5초 후에도 로딩 중이면 무조건 해제 (네트워크 지연 대비)
     const safetyTimer = setTimeout(() => {
       if (isMounted && loading) setLoading(false);
     }, 5000);
@@ -122,14 +122,30 @@ const App: React.FC = () => {
       clearTimeout(safetyTimer);
       if (authSubscription) authSubscription.unsubscribe(); 
     };
-  }, [client, isReady]); // client 존재 여부를 주요 트리거로 사용
+  }, [client]);
 
-  // ... (handleProcess, handleReset 등 나머지 로직은 동일)
+  // ─── [보강] 분석 프로세스 (타임아웃 및 가드 로직) ───
   const handleProcess = useCallback(async (text: string) => {
-    if (!client) return;
+    if (!client || (user.isLoggedIn && !user.userId)) {
+      setError("시스템 초기화 중입니다. 잠시 후 다시 시도하십시오.");
+      return;
+    }
+    
+    // 1. 선제적 한도 체크
+    const currentUsage = usageInfo?.daily ?? user.usageCount;
+    const currentLimit = usageInfo?.dailyLimit ?? ANONYMOUS_DAILY_LIMIT;
+
+    if (currentUsage >= currentLimit) {
+      setStep('recharge');
+      return;
+    }
+
     setError(null);
     setResult(null);
+    setInput(text);
+    setStep('processing');
 
+    // 2. 익명 사용자 로컬 체크
     if (!user.isLoggedIn) {
       const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
@@ -139,30 +155,47 @@ const App: React.FC = () => {
       }
     }
 
-    setInput(text);
-    setStep('processing');
-
     try {
+      // 3. 분석 실행 (Gemini API)
       const data = await analyzeText(client, text);
-      if (data) {
+      
+      if (data && isReady) {
         setResult(data);
         setStep('result');
+
+        // 4. 분석 성공 확정 시에만 사용량 차감 (무결성 원칙)
         if (user.isLoggedIn && user.userId) {
-          const updatedProfile = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
-          setUsageInfo({
-            daily: updatedProfile.daily_usage,
-            monthly: updatedProfile.monthly_usage,
-            dailyLimit: updatedProfile.is_pro ? 100 : 10,
-            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
-          });
-          setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
+          try {
+            const updated = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
+            setUsageInfo({
+              daily: updated.daily_usage,
+              monthly: updated.monthly_usage,
+              dailyLimit: updated.is_pro ? 100 : 10,
+              monthlyLimit: updated.is_pro ? 3000 : 200,
+            });
+            setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
+          } catch (dbErr: any) {
+            console.warn("Usage sync failed but result delivered.");
+          }
+        } else {
+          // 익명 사용자 로컬 카운트 증가
+          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          const usage = parseInt(localStorage.getItem(todayKey) || '0');
+          localStorage.setItem(todayKey, (usage + 1).toString());
+          setUser(prev => ({ ...prev, usageCount: usage + 1 }));
         }
       }
     } catch (err: any) {
-      setError(err.message || 'Analysis failed');
-      setStep('input');
+      console.error("Critical Failure:", err);
+      // 특정 에러(한도초과 등) 발생 시 즉시 리차지 유도
+      if (err.message?.includes("LIMIT") || err.message?.includes("400")) {
+        setStep('recharge');
+      } else {
+        setError(err.message || '분석 중 오류가 발생했습니다. 다시 시도하십시오.');
+        setStep('input');
+      }
     }
-  }, [user, client]);
+  }, [user, client, usageInfo, isReady]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -175,12 +208,20 @@ const App: React.FC = () => {
   };
 
   const handlePaymentSuccess = useCallback(async () => {
+    setLoading(true);
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
         setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
+        setUsageInfo({
+          daily: profile.daily_usage ?? 0,
+          monthly: profile.monthly_usage ?? 0,
+          dailyLimit: profile.is_pro ? 100 : 10,
+          monthlyLimit: profile.is_pro ? 3000 : 200,
+        });
       }
     }
+    setLoading(false);
     setStep('input');
   }, [client, user.userId]);
 
@@ -194,7 +235,7 @@ const App: React.FC = () => {
 
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
-    : !user.isLoggedIn ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount) : null;
+    : Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount);
 
   return (
     <PayPalScriptProvider options={paypalOptions}>
@@ -209,7 +250,7 @@ const App: React.FC = () => {
           </div>
           <div className="flex items-center gap-8">
             {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full uppercase">PRO</span>}
-            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left</span>}
+            <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left Today</span>
             {user.isLoggedIn ? (
               <div className="flex items-center gap-6">
                 <span className="text-xs font-bold text-gray-400">{user.email}</span>
@@ -225,10 +266,11 @@ const App: React.FC = () => {
             </button>
           </div>
         </nav>
+
         <main className="pt-16">
           {step === 'input' && (
             <>
-              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">{error}</div>}
+              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold shadow-2xl">{error}</div>}
               <Landing onProcess={handleProcess} />
             </>
           )}
