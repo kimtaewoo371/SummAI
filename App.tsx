@@ -48,13 +48,27 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 인증 및 사용자 데이터 로드 로직 ───
+  // ─── 핵심: 무조건 로딩을 해제하는 인증 로직 ───
   useEffect(() => {
-    if (!isReady || !client) return;
-
     let isMounted = true;
+    let subscription: any = null;
 
     const initialize = async () => {
+      // 1. 만약 2초 뒤에도 isReady가 false라면 강제로 로딩 해제 (보험)
+      const timeoutId = setTimeout(() => {
+        if (isMounted && loading) {
+          console.warn('⚠️ Auth initialization timeout - forcing load');
+          setLoading(false);
+        }
+      }, 2000);
+
+      if (!isReady || !client) {
+        // 아직 준비 안 됐으면 일단 여기서 중단 (타임아웃이 해결함)
+        return;
+      }
+
+      clearTimeout(timeoutId); // 준비 됐으면 타임아웃 해제
+
       try {
         const { data: { session }, error: sessionError } = await client.auth.getSession();
         if (sessionError) throw sessionError;
@@ -78,47 +92,42 @@ const App: React.FC = () => {
           }
         }
       } catch (err) {
-        console.error('❌ Initialization error:', err);
+        console.error('❌ Init Error:', err);
       } finally {
         if (isMounted) setLoading(false);
       }
+
+      // 리스너 등록
+      const { data } = client.auth.onAuthStateChange(async (event, session) => {
+        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+          const profile = await getProfile(client, session.user.id);
+          if (isMounted && profile) {
+            setUser({
+              isLoggedIn: true,
+              usageCount: profile.usage_count,
+              email: profile.email,
+              userId: session.user.id,
+              isPro: profile.is_pro || false,
+            });
+          }
+        } else if (event === 'SIGNED_OUT' && isMounted) {
+          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+          setUsageInfo(null);
+        }
+      });
+      subscription = data.subscription;
     };
 
     initialize();
 
-    const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-        const profile = await getProfile(client, session.user.id);
-        if (isMounted && profile) {
-          setUser({
-            isLoggedIn: true,
-            usageCount: profile.usage_count,
-            email: profile.email,
-            userId: session.user.id,
-            isPro: profile.is_pro || false,
-          });
-          setUsageInfo({
-            daily: profile.daily_usage ?? 0,
-            monthly: profile.monthly_usage ?? 0,
-            dailyLimit: profile.is_pro ? 100 : 10,
-            monthlyLimit: profile.is_pro ? 3000 : 200,
-          });
-        }
-      } else if (event === 'SIGNED_OUT' && isMounted) {
-        setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
-        setUsageInfo(null);
-      }
-    });
-
     return () => {
       isMounted = false;
-      subscription.unsubscribe();
+      if (subscription) subscription.unsubscribe();
     };
   }, [isReady, client]);
 
   const handleProcess = useCallback(async (text: string) => {
-    if (!isReady || !client) return;
-
+    if (!client) return;
     setError(null);
     setResult(null);
 
@@ -131,14 +140,6 @@ const App: React.FC = () => {
       }
     }
 
-    if (user.isLoggedIn && usageInfo) {
-      if (usageInfo.daily >= usageInfo.dailyLimit) {
-        setError(`Limit reached (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
-        if (!user.isPro) setStep('recharge');
-        return;
-      }
-    }
-
     setInput(text);
     setStep('processing');
 
@@ -147,7 +148,6 @@ const App: React.FC = () => {
       if (data) {
         setResult(data);
         setStep('result');
-
         if (user.isLoggedIn && user.userId) {
           const updated = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
           setUsageInfo({
@@ -157,18 +157,13 @@ const App: React.FC = () => {
             monthlyLimit: updated.is_pro ? 3000 : 200,
           });
           setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
-        } else {
-          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
-          const usage = parseInt(localStorage.getItem(todayKey) || '0');
-          localStorage.setItem(todayKey, (usage + 1).toString());
-          setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
         }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Analysis failed');
       setStep('input');
     }
-  }, [user, usageInfo, isReady, client]);
+  }, [user, client]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -184,19 +179,14 @@ const App: React.FC = () => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
-        setUser(prev => ({ ...prev, isPro: profile.is_pro }));
-        setUsageInfo({
-          daily: profile.daily_usage ?? 0,
-          monthly: profile.monthly_usage ?? 0,
-          dailyLimit: 100,
-          monthlyLimit: 3000,
-        });
+        setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
       }
     }
     setStep('input');
   }, [client, user.userId]);
 
-  if (loading || !isReady) {
+  // ─── 렌더링 ───
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
@@ -219,34 +209,28 @@ const App: React.FC = () => {
             </div>
             <span className="font-black text-lg tracking-tight">SummAI</span>
           </div>
-
           <div className="flex items-center gap-8">
-            {user.isPro && <span className="text-[10px] font-bold bg-black text-white uppercase tracking-widest px-3 py-1 rounded-full">PRO</span>}
-            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Uses Left Today</span>}
+            {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full">PRO</span>}
+            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400">{remainingDaily} Left</span>}
             {user.isLoggedIn ? (
               <div className="flex items-center gap-6">
-                <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{user.email}</span>
-                <button onClick={handleSignOut} className="text-[10px] font-black uppercase tracking-widest hover:text-black">Sign Out</button>
+                <span className="text-xs text-gray-400">{user.email}</span>
+                <button onClick={handleSignOut} className="text-[10px] font-black uppercase tracking-widest">Sign Out</button>
               </div>
             ) : (
-              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase tracking-widest hover:text-gray-500">Log In</button>
+              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase tracking-widest">Log In</button>
             )}
-            <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-100">
-              <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border">
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
               </svg>
             </button>
           </div>
         </nav>
-
         <main className="pt-16">
           {step === 'input' && (
             <>
-              {error && (
-                <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold uppercase tracking-widest">
-                  {error}
-                </div>
-              )}
+              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px]">{error}</div>}
               <Landing onProcess={handleProcess} />
             </>
           )}
