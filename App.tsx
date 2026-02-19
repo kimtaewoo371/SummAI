@@ -1,16 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
-// 1. Types & Services (원본 유지)
 import { AppStep, AnalysisResult, UserState } from './types';
-import { analyzeText } from './services/geminiService';
-import {
-  getProfile,
-  incrementUsageCount,
-  signOut
-} from './services/supabaseClient';
-
-// 2. Components (원본 유지)
 import Landing from './components/Landing';
 import Loading from './components/Loading';
 import ResultView from './components/ResultView';
@@ -18,26 +9,18 @@ import LoginPage from './components/LoginPage';
 import RechargePage from './components/RechargePage';
 import PaymentPage from './components/PaymentPage';
 
-// 3. Provider (경로 주의)
-import { useSupabase } from './components/providers.tsx/SupabaseProvider';
+import { analyzeText } from './services/geminiService';
+import {
+  useSupabase,
+  getProfile,
+  incrementUsageCount,
+  signOut
+} from './services/supabaseClient';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
-
-  // State Management (원본 보존)
-  const [step, setStep] = useState<AppStep>('input');
-  const [input, setInput] = useState<string>('');
-  const [result, setResult] = useState<AnalysisResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState<boolean>(true); // 초기 진입 가드
-
-  const [user, setUser] = useState<UserState>({
-    isLoggedIn: false,
-    usageCount: 0,
-    isPro: false
-  });
 
   const paypalOptions = {
     clientId: import.meta.env.VITE_PAYPAL_CLIENT_ID || "",
@@ -46,20 +29,52 @@ const App: React.FC = () => {
     vault: true,
   };
 
-  // 🔥 [수정 포인트] 무한 로딩 해결 로직
-  // 원본의 복잡한 조건문을 try-catch-finally로 감싸서 어떤 경우에도 loading이 꺼지게 함
+  const [step, setStep] = useState<AppStep>('input');
+  const [input, setInput] = useState<string>('');
+  const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  
+  // 초기 로딩 상태
+  const [loading, setLoading] = useState<boolean>(true);
+
+  const [usageInfo, setUsageInfo] = useState<{
+    daily: number;
+    monthly: number;
+    dailyLimit: number;
+    monthlyLimit: number;
+  }>({
+    daily: 0,
+    monthly: 0,
+    dailyLimit: ANONYMOUS_DAILY_LIMIT,
+    monthlyLimit: 300,
+  });
+
+  const [user, setUser] = useState<UserState>({
+    isLoggedIn: false,
+    usageCount: 0,
+    isPro: false
+  });
+
+  // 🔥 [수정] 무한 로딩 해결: try-catch-finally로 어떤 경우에도 loading 종료 보장
   useEffect(() => {
     let isMounted = true;
 
     const initAuth = async () => {
-      if (!isReady || !client) return; 
+      // client가 준비되지 않았으면 대기
+      if (!isReady || !client) {
+        console.log('App useEffect - waiting for client');
+        return; 
+      }
 
       try {
-        const { data: { session }, error: authError } = await client.auth.getSession();
-        if (authError) throw authError;
+        console.log('App useEffect - fetching session');
+        const { data: { session }, error: sessionError } = await client.auth.getSession();
+        
+        if (sessionError) throw sessionError;
 
         if (session && isMounted) {
           const profile = await getProfile(client, session.user.id);
+          
           setUser({
             isLoggedIn: true,
             userId: session.user.id,
@@ -67,42 +82,55 @@ const App: React.FC = () => {
             usageCount: profile?.usage_count || 0,
             isPro: profile?.is_pro || false
           });
+
+          setUsageInfo(prev => ({
+            ...prev,
+            daily: profile?.usage_count || 0,
+            dailyLimit: profile?.is_pro ? 100 : ANONYMOUS_DAILY_LIMIT
+          }));
         }
       } catch (err) {
-        console.error('Critical Init Error:', err);
+        console.error('Auth initialization failed:', err);
       } finally {
+        // 🔥 핵심: 성공하든 실패하든 여기서 로딩을 끝냅니다.
         if (isMounted) {
-          setLoading(false); // 👈 여기서 무한 로딩의 사슬을 끊습니다.
+          setLoading(false);
+          console.log('App useEffect - isReady: true');
         }
       }
     };
 
     initAuth();
+
     return () => { isMounted = false; };
   }, [isReady, client]);
 
-  // Handlers (원본 로직 100% 복구)
   const handleProcess = async (text: string) => {
     if (!client) return;
+    
     setInput(text);
     setStep('processing');
     setError(null);
 
     try {
-      const res = await analyzeText(client, text);
-      setResult(res);
+      const analysisResult = await analyzeText(client, text);
+      setResult(analysisResult);
       
       if (user.userId) {
         await incrementUsageCount(client, user.userId);
-        const updated = await getProfile(client, user.userId);
-        if (updated) setUser(prev => ({ ...prev, usageCount: updated.usage_count }));
+        const updatedProfile = await getProfile(client, user.userId);
+        if (updatedProfile) {
+          setUser(prev => ({ ...prev, usageCount: updatedProfile.usage_count }));
+        }
       }
+      
       setStep('result');
     } catch (err: any) {
+      console.error('Analysis failed:', err);
       if (err.message === 'ANONYMOUS_LIMIT_EXCEEDED') {
         setStep('recharge');
       } else {
-        setError(err.message || 'Analysis failed');
+        setError(err.message || '분석 중 오류가 발생했습니다.');
         setStep('input');
       }
     }
@@ -116,26 +144,30 @@ const App: React.FC = () => {
   };
 
   const handleLogout = async () => {
-    if (client) {
-      await signOut(client);
-      window.location.reload();
-    }
+    if (!client) return;
+    await signOut(client);
+    window.location.reload();
   };
 
-  // 초기 시스템 로딩 레이아웃
+  const handlePaymentSuccess = (subscriptionId: string) => {
+    console.log('Payment successful:', subscriptionId);
+    setStep('input');
+    window.location.reload(); 
+  };
+
+  // 초기 시스템 로딩 레이아웃 (당신이 만든 디자인 유지)
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white">
-        <div className="w-10 h-10 border-2 border-gray-100 border-t-black rounded-full animate-spin mb-4" />
+        <div className="w-10 h-10 border-2 border-gray-100 border-t-black rounded-full animate-spin mb-4"></div>
         <p className="text-[10px] font-bold uppercase tracking-widest text-gray-400">Initializing System...</p>
       </div>
     );
   }
 
   return (
-    <PayPalScriptProvider options={paypalOptions as any}>
+    <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen bg-white">
-        {/* Navigation - 원본 디자인 그대로 유지 */}
         <nav className="fixed top-0 w-full h-16 border-b border-gray-50 bg-white/80 backdrop-blur-md z-50 flex items-center justify-between px-8">
           <div className="flex items-center gap-2 cursor-pointer" onClick={handleReset}>
             <div className="w-8 h-8 bg-black rounded-lg flex items-center justify-center">
@@ -167,7 +199,6 @@ const App: React.FC = () => {
           </div>
         </nav>
 
-        {/* Main Content & Routing - 원본 페이지들 100% 복구 */}
         <main className="pt-16">
           {step === 'input' && (
             <>
@@ -179,17 +210,13 @@ const App: React.FC = () => {
               <Landing onProcess={handleProcess} />
             </>
           )}
-          
           {step === 'processing' && <Loading />}
-          
           {step === 'result' && result && (
             <ResultView input={input} result={result} onReset={handleReset} />
           )}
-          
           {step === 'login' && (
             <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />
           )}
-          
           {step === 'recharge' && (
             <RechargePage
               onBack={() => setStep('input')}
@@ -197,11 +224,10 @@ const App: React.FC = () => {
               onUpgrade={() => setStep('payment')}
             />
           )}
-          
           {step === 'payment' && (
             <PaymentPage
               userId={user.userId}
-              onSuccess={() => window.location.reload()}
+              onSuccess={handlePaymentSuccess}
               onCancel={() => setStep('recharge')}
             />
           )}
