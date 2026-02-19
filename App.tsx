@@ -29,7 +29,7 @@ const App: React.FC = () => {
     vault: true,
   };
 
-  const [appReady, setAppReady] = useState(false); // ⭐ 추가 (핵심)
+  const [appReady, setAppReady] = useState(false); // ⭐ 추가
 
   const [step, setStep] = useState<AppStep>('input');
   const [input, setInput] = useState<string>('');
@@ -50,21 +50,20 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // 🔥🔥🔥 핵심 수정된 인증 초기화
+  // 🔐 인증 초기화 (최종 안정 버전)
   useEffect(() => {
-    if (!isReady || !client) return; // ⭐ client 준비 전 실행 금지
-
     let isMounted = true;
     let authSubscription: any = null;
 
     const initializeAuth = async () => {
+      if (!client) return;
+
       try {
         const { data: { session } } = await client.auth.getSession();
 
         if (session?.user && isMounted) {
           const profile = await getProfile(client, session.user.id);
-
-          if (isMounted && profile) {
+          if (profile && isMounted) {
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -72,7 +71,6 @@ const App: React.FC = () => {
               userId: session.user.id,
               isPro: profile.is_pro || false,
             });
-
             setUsageInfo({
               daily: profile.daily_usage ?? 0,
               monthly: profile.monthly_usage ?? 0,
@@ -86,7 +84,7 @@ const App: React.FC = () => {
       } finally {
         if (isMounted) {
           setLoading(false);
-          setAppReady(true); // ⭐⭐⭐ 앱 렌더 허용
+          setAppReady(true); // ⭐ 여기 핵심
         }
       }
 
@@ -95,7 +93,7 @@ const App: React.FC = () => {
 
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
           const profile = await getProfile(client, session.user.id);
-          if (profile) {
+          if (profile && isMounted) {
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -113,7 +111,9 @@ const App: React.FC = () => {
       authSubscription = data.subscription;
     };
 
-    initializeAuth();
+    if (isReady && client) {
+      initializeAuth();
+    }
 
     return () => {
       isMounted = false;
@@ -121,14 +121,7 @@ const App: React.FC = () => {
     };
   }, [client, isReady]);
 
-  // ⭐⭐⭐⭐⭐ 진짜 핵심 게이트 (client 준비 전 UI 렌더 금지)
-  if (!isReady || !client || !appReady) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
-      </div>
-    );
-  }
+  // ---------------- 기능 로직 ----------------
 
   const handleProcess = useCallback(async (text: string) => {
     if (!client) return;
@@ -179,7 +172,10 @@ const App: React.FC = () => {
   }, [user, client]);
 
   const handleReset = useCallback(() => {
-    setResult(null); setInput(''); setError(null); setStep('input');
+    setResult(null);
+    setInput('');
+    setError(null);
+    setStep('input');
   }, []);
 
   const handleSignOut = async () => {
@@ -200,49 +196,60 @@ const App: React.FC = () => {
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
     : !user.isLoggedIn ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount) : null;
 
+  // ⭐⭐⭐ Hook 깨짐 방지용 렌더 게이트 (JSX 내부!)
   return (
     <PayPalScriptProvider options={paypalOptions}>
-      <div className="min-h-screen text-gray-900 font-sans bg-white">
-        <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
-          <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
-            <div className="w-8 h-8 bg-black rounded flex items-center justify-center relative">
-              <div className="w-4 h-0.5 bg-white rounded-full rotate-45 translate-y-[-1px]"></div>
-              <div className="w-4 h-0.5 bg-white rounded-full -rotate-45 translate-y-[1px] absolute"></div>
-            </div>
-            <span className="font-black text-lg tracking-tight">SummAI</span>
-          </div>
-          <div className="flex items-center gap-8">
-            {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full uppercase">PRO</span>}
-            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left</span>}
-            {user.isLoggedIn ? (
-              <div className="flex items-center gap-6">
-                <span className="text-xs font-bold text-gray-400">{user.email}</span>
-                <button onClick={handleSignOut} className="text-[10px] font-black uppercase hover:text-black">Sign Out</button>
+      {!isReady || !client || !appReady || loading ? (
+        <div className="min-h-screen flex items-center justify-center bg-white">
+          <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
+        </div>
+      ) : (
+        <div className="min-h-screen text-gray-900 font-sans bg-white">
+          <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
+            <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
+              <div className="w-8 h-8 bg-black rounded flex items-center justify-center relative">
+                <div className="w-4 h-0.5 bg-white rounded-full rotate-45 translate-y-[-1px]"></div>
+                <div className="w-4 h-0.5 bg-white rounded-full -rotate-45 translate-y-[1px] absolute"></div>
               </div>
-            ) : (
-              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase hover:text-gray-500">Log In</button>
+              <span className="font-black text-lg tracking-tight">SummAI</span>
+            </div>
+
+            <div className="flex items-center gap-8">
+              {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full uppercase">PRO</span>}
+              {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left</span>}
+
+              {user.isLoggedIn ? (
+                <div className="flex items-center gap-6">
+                  <span className="text-xs font-bold text-gray-400">{user.email}</span>
+                  <button onClick={handleSignOut} className="text-[10px] font-black uppercase hover:text-black">Sign Out</button>
+                </div>
+              ) : (
+                <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase hover:text-gray-500">Log In</button>
+              )}
+
+              <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-100">
+                <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
+                </svg>
+              </button>
+            </div>
+          </nav>
+
+          <main className="pt-16">
+            {step === 'input' && (
+              <>
+                {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">{error}</div>}
+                <Landing onProcess={handleProcess} />
+              </>
             )}
-            <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-100">
-              <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
-              </svg>
-            </button>
-          </div>
-        </nav>
-        <main className="pt-16">
-          {step === 'input' && (
-            <>
-              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">{error}</div>}
-              <Landing onProcess={handleProcess} />
-            </>
-          )}
-          {step === 'processing' && <Loading />}
-          {step === 'result' && result && <ResultView input={input} result={result} onReset={handleReset} />}
-          {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
-          {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
-          {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={handlePaymentSuccess} onCancel={() => setStep('recharge')} />}
-        </main>
-      </div>
+            {step === 'processing' && <Loading />}
+            {step === 'result' && result && <ResultView input={input} result={result} onReset={handleReset} />}
+            {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
+            {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
+            {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={handlePaymentSuccess} onCancel={() => setStep('recharge')} />}
+          </main>
+        </div>
+      )}
     </PayPalScriptProvider>
   );
 };
