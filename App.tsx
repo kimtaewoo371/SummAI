@@ -33,8 +33,6 @@ const App: React.FC = () => {
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
-  // 초기 로딩 상태는 true로 시작
   const [loading, setLoading] = useState<boolean>(true);
 
   const [usageInfo, setUsageInfo] = useState<{
@@ -50,28 +48,19 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 초기 인증 & 프로필 로드 (수정 핵심 로직) ───
+  // ─── 인증 및 사용자 데이터 로드 로직 ───
   useEffect(() => {
-    console.log('🔍 App useEffect - isReady:', isReady, 'client:', !!client);
-    
-    // 1. 라이브러리가 로드되지 않았다면 로딩 유지 후 대기
-    if (!isReady || !client) { 
-      return; 
-    }
+    if (!isReady || !client) return;
 
     let isMounted = true;
 
-    const initializeAuth = async () => {
+    const initialize = async () => {
       try {
-        console.log('🔍 Fetching session...');
         const { data: { session }, error: sessionError } = await client.auth.getSession();
-        
         if (sessionError) throw sessionError;
-        
+
         if (session?.user && isMounted) {
-          console.log('🔍 Session found, loading profile...');
           const profile = await getProfile(client, session.user.id);
-          
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
@@ -87,24 +76,17 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
-        } else {
-          console.log('✅ No session, continuing as Guest');
         }
       } catch (err) {
-        console.error('❌ Initialization failed:', err);
+        console.error('❌ Initialization error:', err);
       } finally {
-        // 🔥 이 3줄이 반드시 들어가야 합니다. 
-        // 성공하든 에러가 나든 세션이 없든, 초기화가 끝났으면 로딩을 풀어야 화면이 나옵니다.
-        if (isMounted) {
-          setLoading(false);
-        }
+        if (isMounted) setLoading(false);
       }
     };
-    initializeAuth();
 
-    // 인증 상태 변화 감지
+    initialize();
+
     const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-      console.log('🔍 Auth State Change:', event);
       if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
         const profile = await getProfile(client, session.user.id);
         if (isMounted && profile) {
@@ -122,30 +104,24 @@ const App: React.FC = () => {
             monthlyLimit: profile.is_pro ? 3000 : 200,
           });
         }
-      } else if (event === 'SIGNED_OUT') {
-        if (isMounted) {
-          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
-          setUsageInfo(null);
-        }
+      } else if (event === 'SIGNED_OUT' && isMounted) {
+        setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+        setUsageInfo(null);
       }
     });
 
-    return () => { 
-      isMounted = false; 
-      subscription.unsubscribe(); 
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
     };
-  }, [isReady, client]); // 의존성 배열 유지
+  }, [isReady, client]);
 
   const handleProcess = useCallback(async (text: string) => {
-    if (!isReady || !client) {
-      setError('System is initializing. Please wait...');
-      return;
-    }
+    if (!isReady || !client) return;
 
     setError(null);
     setResult(null);
 
-    // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
       const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
@@ -155,10 +131,9 @@ const App: React.FC = () => {
       }
     }
 
-    // 로그인 사용자 DB 기반 제한
     if (user.isLoggedIn && usageInfo) {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
-        setError(`일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
+        setError(`Limit reached (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
         if (!user.isPro) setStep('recharge');
         return;
       }
@@ -169,22 +144,19 @@ const App: React.FC = () => {
 
     try {
       const data = await analyzeText(client, text);
-
       if (data) {
         setResult(data);
         setStep('result');
 
         if (user.isLoggedIn && user.userId) {
-          const updatedProfile = await incrementUsageCount(
-            client, user.userId, text.length, data.resultText?.length || 0, 0
-          );
+          const updated = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
           setUsageInfo({
-            daily: updatedProfile.daily_usage,
-            monthly: updatedProfile.monthly_usage,
-            dailyLimit: updatedProfile.is_pro ? 100 : 10,
-            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
+            daily: updated.daily_usage,
+            monthly: updated.monthly_usage,
+            dailyLimit: updated.is_pro ? 100 : 10,
+            monthlyLimit: updated.is_pro ? 3000 : 200,
           });
-          setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
+          setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
         } else {
           const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
           const usage = parseInt(localStorage.getItem(todayKey) || '0');
@@ -193,8 +165,7 @@ const App: React.FC = () => {
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Analysis failed';
-      setError(message);
+      setError(err instanceof Error ? err.message : 'Analysis failed');
       setStep('input');
     }
   }, [user, usageInfo, isReady, client]);
@@ -206,14 +177,14 @@ const App: React.FC = () => {
   const handleSignOut = async () => {
     if (!client) return;
     try { await signOut(client); setStep('input'); }
-    catch (err) { console.error('Sign out error:', err); }
+    catch (err) { console.error(err); }
   };
 
-  const handlePaymentSuccess = useCallback(async (_subscriptionId: string) => {
+  const handlePaymentSuccess = useCallback(async () => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
-        setUser(prev => ({ ...prev, isPro: profile.is_pro || false }));
+        setUser(prev => ({ ...prev, isPro: profile.is_pro }));
         setUsageInfo({
           daily: profile.daily_usage ?? 0,
           monthly: profile.monthly_usage ?? 0,
@@ -225,7 +196,6 @@ const App: React.FC = () => {
     setStep('input');
   }, [client, user.userId]);
 
-  // ─── 렌더링 로직 (무한 로딩 방지 핵심) ───
   if (loading || !isReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -236,16 +206,14 @@ const App: React.FC = () => {
 
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
-    : !user.isLoggedIn
-    ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount)
-    : null;
+    : !user.isLoggedIn ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount) : null;
 
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
         <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
-            <div className="w-8 h-8 bg-black rounded flex items-center justify-center">
+            <div className="w-8 h-8 bg-black rounded flex items-center justify-center relative">
               <div className="w-4 h-0.5 bg-white rounded-full rotate-45 translate-y-[-1px]"></div>
               <div className="w-4 h-0.5 bg-white rounded-full -rotate-45 translate-y-[1px] absolute"></div>
             </div>
@@ -253,16 +221,8 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-8">
-            {user.isPro && (
-              <span className="text-[10px] font-bold bg-black text-white uppercase tracking-widest px-3 py-1 rounded-full">
-                PRO
-              </span>
-            )}
-            {remainingDaily !== null && (
-              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
-                {remainingDaily} Uses Left Today
-              </span>
-            )}
+            {user.isPro && <span className="text-[10px] font-bold bg-black text-white uppercase tracking-widest px-3 py-1 rounded-full">PRO</span>}
+            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Uses Left Today</span>}
             {user.isLoggedIn ? (
               <div className="flex items-center gap-6">
                 <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{user.email}</span>
@@ -291,26 +251,10 @@ const App: React.FC = () => {
             </>
           )}
           {step === 'processing' && <Loading />}
-          {step === 'result' && result && (
-            <ResultView input={input} result={result} onReset={handleReset} />
-          )}
-          {step === 'login' && (
-            <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />
-          )}
-          {step === 'recharge' && (
-            <RechargePage
-              onBack={() => setStep('input')}
-              onLogin={() => setStep('login')}
-              onUpgrade={() => setStep('payment')}
-            />
-          )}
-          {step === 'payment' && (
-            <PaymentPage
-              userId={user.userId}
-              onSuccess={handlePaymentSuccess}
-              onCancel={() => setStep('recharge')}
-            />
-          )}
+          {step === 'result' && result && <ResultView input={input} result={result} onReset={handleReset} />}
+          {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
+          {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
+          {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={handlePaymentSuccess} onCancel={() => setStep('recharge')} />}
         </main>
       </div>
     </PayPalScriptProvider>
