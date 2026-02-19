@@ -48,31 +48,23 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 핵심: 무조건 로딩을 해제하는 인증 로직 ───
+  // ─── 초기 인증 및 세션 로드 로직 ───
   useEffect(() => {
     let isMounted = true;
-    let subscription: any = null;
+    let authSubscription: any = null;
 
-    const initialize = async () => {
-      // 1. 만약 2초 뒤에도 isReady가 false라면 강제로 로딩 해제 (보험)
-      const timeoutId = setTimeout(() => {
-        if (isMounted && loading) {
-          console.warn('⚠️ Auth initialization timeout - forcing load');
-          setLoading(false);
-        }
-      }, 2000);
-
-      if (!isReady || !client) {
-        // 아직 준비 안 됐으면 일단 여기서 중단 (타임아웃이 해결함)
-        return;
-      }
-
-      clearTimeout(timeoutId); // 준비 됐으면 타임아웃 해제
+    const initializeAuth = async () => {
+      // 1. 라이브러리 준비 안 됐으면 대기 (단, 무한 대기 방지를 위해 하단에서 타임아웃 처리 가능)
+      if (!isReady || !client) return;
 
       try {
         const { data: { session }, error: sessionError } = await client.auth.getSession();
-        if (sessionError) throw sessionError;
-
+        
+        if (sessionError) {
+          // AbortError(작업 취소)는 에러로 취급하지 않음
+          if (sessionError.name !== 'AbortError') throw sessionError;
+        }
+        
         if (session?.user && isMounted) {
           const profile = await getProfile(client, session.user.id);
           if (isMounted && profile) {
@@ -91,14 +83,21 @@ const App: React.FC = () => {
             });
           }
         }
-      } catch (err) {
-        console.error('❌ Init Error:', err);
+      } catch (err: any) {
+        // 단순 취소 에러가 아닌 경우에만 기록
+        if (err.name !== 'AbortError') {
+          console.error('❌ Auth initialization failed:', err);
+        }
       } finally {
-        if (isMounted) setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
 
-      // 리스너 등록
+      // 2. 인증 상태 변경 리스너 등록
       const { data } = client.auth.onAuthStateChange(async (event, session) => {
+        if (!isMounted) return;
+
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
           const profile = await getProfile(client, session.user.id);
           if (isMounted && profile) {
@@ -110,19 +109,28 @@ const App: React.FC = () => {
               isPro: profile.is_pro || false,
             });
           }
-        } else if (event === 'SIGNED_OUT' && isMounted) {
+        } else if (event === 'SIGNED_OUT') {
           setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
           setUsageInfo(null);
         }
       });
-      subscription = data.subscription;
+      authSubscription = data.subscription;
     };
 
-    initialize();
+    initializeAuth();
 
-    return () => {
-      isMounted = false;
-      if (subscription) subscription.unsubscribe();
+    // 3. 보험: 3초 후에도 로딩이 안 풀리면 강제 해제 (Supabase 연결 지연 대비)
+    const backupTimer = setTimeout(() => {
+      if (isMounted && loading) {
+        console.warn('⚠️ Safety timeout: Forcing loading to false');
+        setLoading(false);
+      }
+    }, 3000);
+
+    return () => { 
+      isMounted = false; 
+      clearTimeout(backupTimer);
+      if (authSubscription) authSubscription.unsubscribe(); 
     };
   }, [isReady, client]);
 
@@ -149,21 +157,21 @@ const App: React.FC = () => {
         setResult(data);
         setStep('result');
         if (user.isLoggedIn && user.userId) {
-          const updated = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
+          const updatedProfile = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
           setUsageInfo({
-            daily: updated.daily_usage,
-            monthly: updated.monthly_usage,
-            dailyLimit: updated.is_pro ? 100 : 10,
-            monthlyLimit: updated.is_pro ? 3000 : 200,
+            daily: updatedProfile.daily_usage,
+            monthly: updatedProfile.monthly_usage,
+            dailyLimit: updatedProfile.is_pro ? 100 : 10,
+            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
           });
-          setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
+          setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
         }
       }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Analysis failed');
+    } catch (err: any) {
+      setError(err.message || 'Analysis failed');
       setStep('input');
     }
-  }, [user, client]);
+  }, [user, usageInfo, client]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -179,13 +187,12 @@ const App: React.FC = () => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
-        setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
+        setUser(prev => ({ ...prev, isPro: profile.is_pro || false }));
       }
     }
     setStep('input');
   }, [client, user.userId]);
 
-  // ─── 렌더링 ───
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -210,27 +217,28 @@ const App: React.FC = () => {
             <span className="font-black text-lg tracking-tight">SummAI</span>
           </div>
           <div className="flex items-center gap-8">
-            {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full">PRO</span>}
-            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400">{remainingDaily} Left</span>}
+            {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full uppercase">PRO</span>}
+            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left</span>}
             {user.isLoggedIn ? (
               <div className="flex items-center gap-6">
-                <span className="text-xs text-gray-400">{user.email}</span>
-                <button onClick={handleSignOut} className="text-[10px] font-black uppercase tracking-widest">Sign Out</button>
+                <span className="text-xs font-bold text-gray-400">{user.email}</span>
+                <button onClick={handleSignOut} className="text-[10px] font-black uppercase hover:text-black">Sign Out</button>
               </div>
             ) : (
-              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase tracking-widest">Log In</button>
+              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase hover:text-gray-500">Log In</button>
             )}
-            <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border">
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-100">
+              <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" />
               </svg>
             </button>
           </div>
         </nav>
+
         <main className="pt-16">
           {step === 'input' && (
             <>
-              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px]">{error}</div>}
+              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">{error}</div>}
               <Landing onProcess={handleProcess} />
             </>
           )}
