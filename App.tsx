@@ -33,6 +33,8 @@ const App: React.FC = () => {
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  // 초기 로딩 상태는 true로 시작
   const [loading, setLoading] = useState<boolean>(true);
 
   const [usageInfo, setUsageInfo] = useState<{
@@ -48,29 +50,27 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 초기 인증 & 프로필 로드 ───
+  // ─── 초기 인증 & 프로필 로드 (수정 핵심 로직) ───
   useEffect(() => {
-    console.log('🔍 App useEffect triggered - isReady:', isReady, 'client:', !!client);
+    console.log('🔍 App useEffect - isReady:', isReady, 'client:', !!client);
     
+    // 1. 라이브러리가 로드되지 않았다면 로딩 유지 후 대기
     if (!isReady || !client) { 
-      console.log('⏳ Waiting for Supabase... isReady:', isReady, 'client:', !!client);
-      setLoading(true); 
       return; 
     }
 
-    console.log('✅ Supabase ready, starting initialization...');
     let isMounted = true;
 
     const initializeAuth = async () => {
       try {
-        console.log('🔍 Getting session...');
-        const { data: { session } } = await client.auth.getSession();
-        console.log('🔍 Session result:', session ? 'User logged in' : 'No session');
+        console.log('🔍 Fetching session...');
+        const { data: { session }, error: sessionError } = await client.auth.getSession();
         
-        if (session?.user) {
-          console.log('🔍 Fetching profile for user:', session.user.id);
+        if (sessionError) throw sessionError;
+        
+        if (session?.user && isMounted) {
+          console.log('🔍 Session found, loading profile...');
           const profile = await getProfile(client, session.user.id);
-          console.log('🔍 Profile result:', profile ? 'Loaded' : 'null');
           
           if (isMounted && profile) {
             setUser({
@@ -81,18 +81,19 @@ const App: React.FC = () => {
               isPro: profile.is_pro || false,
             });
             setUsageInfo({
-              daily:        profile.daily_usage ?? 0,
-              monthly:      profile.monthly_usage ?? 0,
-              dailyLimit:   profile.is_pro ? 100 : 10,
+              daily: profile.daily_usage ?? 0,
+              monthly: profile.monthly_usage ?? 0,
+              dailyLimit: profile.is_pro ? 100 : 10,
               monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
         } else {
-          console.log('✅ No user session, continuing as anonymous');
+          console.log('✅ No session, continuing as Guest');
         }
       } catch (err) {
-        console.error('❌ Auth init error:', err);
+        console.error('❌ Initialization failed:', err);
       } finally {
+        // 2. 어떤 경로로든(성공/실패/세션없음) 초기화가 끝나면 로딩 반드시 해제
         if (isMounted) {
           console.log('✅ Setting loading to FALSE');
           setLoading(false);
@@ -102,8 +103,9 @@ const App: React.FC = () => {
 
     initializeAuth();
 
+    // 인증 상태 변화 감지
     const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-      console.log('🔍 Auth state changed:', event);
+      console.log('🔍 Auth State Change:', event);
       if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
         const profile = await getProfile(client, session.user.id);
         if (isMounted && profile) {
@@ -115,9 +117,9 @@ const App: React.FC = () => {
             isPro: profile.is_pro || false,
           });
           setUsageInfo({
-            daily:        profile.daily_usage ?? 0,
-            monthly:      profile.monthly_usage ?? 0,
-            dailyLimit:   profile.is_pro ? 100 : 10,
+            daily: profile.daily_usage ?? 0,
+            monthly: profile.monthly_usage ?? 0,
+            dailyLimit: profile.is_pro ? 100 : 10,
             monthlyLimit: profile.is_pro ? 3000 : 200,
           });
         }
@@ -130,11 +132,10 @@ const App: React.FC = () => {
     });
 
     return () => { 
-      console.log('🔍 App useEffect cleanup');
       isMounted = false; 
       subscription.unsubscribe(); 
     };
-  }, [isReady, client]);
+  }, [isReady, client]); // 의존성 배열 유지
 
   const handleProcess = useCallback(async (text: string) => {
     if (!isReady || !client) {
@@ -145,6 +146,7 @@ const App: React.FC = () => {
     setError(null);
     setResult(null);
 
+    // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
       const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
@@ -154,20 +156,10 @@ const App: React.FC = () => {
       }
     }
 
+    // 로그인 사용자 DB 기반 제한
     if (user.isLoggedIn && usageInfo) {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
-        setError(
-          `일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).` +
-          (user.isPro ? ' 내일 초기화됩니다.' : ' Pro로 업그레이드하면 100회/일 사용 가능합니다.')
-        );
-        if (!user.isPro) setStep('recharge');
-        return;
-      }
-      if (usageInfo.monthly >= usageInfo.monthlyLimit) {
-        setError(
-          `월간 한도 초과 (${usageInfo.monthly}/${usageInfo.monthlyLimit}).` +
-          (user.isPro ? ' 다음달 초기화됩니다.' : ' Pro로 업그레이드하면 3,000회/월 사용 가능합니다.')
-        );
+        setError(`일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
         if (!user.isPro) setStep('recharge');
         return;
       }
@@ -188,9 +180,9 @@ const App: React.FC = () => {
             client, user.userId, text.length, data.resultText?.length || 0, 0
           );
           setUsageInfo({
-            daily:        updatedProfile.daily_usage,
-            monthly:      updatedProfile.monthly_usage,
-            dailyLimit:   updatedProfile.is_pro ? 100 : 10,
+            daily: updatedProfile.daily_usage,
+            monthly: updatedProfile.monthly_usage,
+            dailyLimit: updatedProfile.is_pro ? 100 : 10,
             monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
           });
           setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
@@ -203,17 +195,8 @@ const App: React.FC = () => {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Analysis failed';
-
-      if (message.includes('DAILY_LIMIT_EXCEEDED')) {
-        setError(user.isPro ? '일일 한도 초과. 내일 초기화됩니다.' : '일일 한도 초과. Pro로 업그레이드하세요.');
-        if (!user.isPro) setStep('recharge');
-      } else if (message.includes('MONTHLY_LIMIT_EXCEEDED')) {
-        setError(user.isPro ? '월간 한도 초과. 다음달 초기화됩니다.' : '월간 한도 초과. Pro로 업그레이드하세요.');
-        if (!user.isPro) setStep('recharge');
-      } else {
-        setError(message);
-        setStep('input');
-      }
+      setError(message);
+      setStep('input');
     }
   }, [user, usageInfo, isReady, client]);
 
@@ -233,9 +216,9 @@ const App: React.FC = () => {
       if (profile) {
         setUser(prev => ({ ...prev, isPro: profile.is_pro || false }));
         setUsageInfo({
-          daily:        profile.daily_usage ?? 0,
-          monthly:      profile.monthly_usage ?? 0,
-          dailyLimit:   100,
+          daily: profile.daily_usage ?? 0,
+          monthly: profile.monthly_usage ?? 0,
+          dailyLimit: 100,
           monthlyLimit: 3000,
         });
       }
@@ -243,18 +226,14 @@ const App: React.FC = () => {
     setStep('input');
   }, [client, user.userId]);
 
-  console.log('🔍 App render - loading:', loading, 'isReady:', isReady);
-
+  // ─── 렌더링 로직 (무한 로딩 방지 핵심) ───
   if (loading || !isReady) {
-    console.log('🔍 Showing loading spinner - loading:', loading, 'isReady:', isReady);
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
       </div>
     );
   }
-
-  console.log('✅ App ready, rendering main UI');
 
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
@@ -265,7 +244,6 @@ const App: React.FC = () => {
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
-
         <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
             <div className="w-8 h-8 bg-black rounded flex items-center justify-center">
@@ -335,7 +313,6 @@ const App: React.FC = () => {
             />
           )}
         </main>
-
       </div>
     </PayPalScriptProvider>
   );
