@@ -1,4 +1,5 @@
-import React, { useState, useCallback, useEffect } from 'react';
+// App.tsx 수정
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
 import { AppStep, AnalysisResult, UserState } from './types';
@@ -18,6 +19,8 @@ import {
 } from './services/supabaseClient';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
+const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
+const INIT_TIMEOUT = 10000; // 10 seconds - initialization timeout
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
@@ -30,14 +33,16 @@ const App: React.FC = () => {
   };
 
   const [appReady, setAppReady] = useState(false);
-
   const [step, setStep] = useState<AppStep>('input');
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
-
   const [usageInfo, setUsageInfo] = useState<any>(null);
+  
+  // ⭐ Initialization states
+  const [initError, setInitError] = useState<string | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
   const [user, setUser] = useState<UserState>({
     isLoggedIn: false,
@@ -45,14 +50,178 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  /* ---------------- AUTH INIT ---------------- */
+  const sessionRefreshTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastActivityTime = useRef<number>(Date.now());
+  const initAttempts = useRef<number>(0);
+  const maxInitAttempts = 3;
+
+  /* ---------------- SESSION REFRESH ---------------- */
+  
+  const refreshSession = useCallback(async () => {
+    if (!client) return false;
+    
+    try {
+      const { data: { session }, error } = await client.auth.refreshSession();
+      
+      if (error) {
+        console.warn('Session refresh failed:', error);
+        if (error.message?.includes('refresh_token')) {
+          await signOut(client);
+          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+          setUsageInfo(null);
+        }
+        return false;
+      }
+      
+      if (session?.user) {
+        console.log('Session refreshed successfully');
+        return true;
+      }
+    } catch (err) {
+      console.error('Session refresh error:', err);
+      return false;
+    }
+    
+    return false;
+  }, [client]);
+
+  /* ---------------- CONNECTION RECOVERY ---------------- */
+
+  // ⭐ Connection recovery function
+  const handleConnectionRecovery = useCallback(async () => {
+    if (isReconnecting) return;
+    
+    setIsReconnecting(true);
+    console.log('Attempting to recover connection...');
+
+    try {
+      if (client && user.isLoggedIn) {
+        const success = await refreshSession();
+        
+        if (success) {
+          const { data: { session } } = await client.auth.getSession();
+          if (session?.user) {
+            const profile = await getProfile(client, session.user.id);
+            if (profile) {
+              setUser({
+                isLoggedIn: true,
+                usageCount: profile.usage_count,
+                email: profile.email,
+                userId: session.user.id,
+                isPro: profile.is_pro || false,
+              });
+              setUsageInfo({
+                daily: profile.daily_usage ?? 0,
+                monthly: profile.monthly_usage ?? 0,
+                dailyLimit: profile.is_pro ? 100 : 10,
+                monthlyLimit: profile.is_pro ? 3000 : 200,
+              });
+              console.log('Connection recovered successfully');
+            }
+          }
+        } else {
+          console.warn('Session recovery failed - restart required');
+          // Suggest refresh on recovery failure
+          setTimeout(() => {
+            if (window.confirm('Connection lost. Would you like to refresh the page?')) {
+              window.location.reload();
+            }
+          }, 1000);
+        }
+      }
+    } catch (err) {
+      console.error('Connection recovery error:', err);
+    } finally {
+      setIsReconnecting(false);
+    }
+  }, [client, user.isLoggedIn, refreshSession, isReconnecting]);
+
+  // ⭐ Periodic session check
+  useEffect(() => {
+    if (!client || !user.isLoggedIn) return;
+
+    refreshSession();
+
+    sessionRefreshTimer.current = setInterval(() => {
+      refreshSession();
+    }, SESSION_REFRESH_INTERVAL);
+
+    return () => {
+      if (sessionRefreshTimer.current) {
+        clearInterval(sessionRefreshTimer.current);
+      }
+    };
+  }, [client, user.isLoggedIn, refreshSession]);
+
+  // ⭐ Tab visibility detection and session recovery
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (!document.hidden) {
+        const inactiveTime = Date.now() - lastActivityTime.current;
+        
+        // Recover connection if inactive for more than 5 minutes
+        if (inactiveTime > SESSION_REFRESH_INTERVAL) {
+          console.log('Tab reactivated - starting connection recovery');
+          await handleConnectionRecovery();
+        }
+        
+        lastActivityTime.current = Date.now();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [handleConnectionRecovery]);
+
+  // ⭐ Online/offline detection
+  useEffect(() => {
+    const handleOnline = async () => {
+      console.log('Network reconnected');
+      await handleConnectionRecovery();
+    };
+
+    const handleOffline = () => {
+      console.log('Network disconnected');
+      setError('Internet connection lost');
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [handleConnectionRecovery]);
+
+  /* ---------------- AUTH INIT WITH RETRY ---------------- */
 
   useEffect(() => {
     let isMounted = true;
     let authSubscription: any = null;
+    let initTimer: NodeJS.Timeout | null = null;
 
     const initAuth = async () => {
       if (!client) return;
+
+      // ⭐ Set initialization timeout
+      initTimer = setTimeout(() => {
+        if (isMounted && loading) {
+          initAttempts.current++;
+          
+          if (initAttempts.current >= maxInitAttempts) {
+            setInitError('Initialization timeout');
+            setLoading(false);
+            setAppReady(true);
+          } else {
+            console.log(`Retrying initialization (${initAttempts.current}/${maxInitAttempts})...`);
+            window.location.reload();
+          }
+        }
+      }, INIT_TIMEOUT);
 
       try {
         const { data: { session } } = await client.auth.getSession();
@@ -79,10 +248,16 @@ const App: React.FC = () => {
         }
       } catch (err) {
         console.error("Auth init error:", err);
+        if (isMounted) {
+          setInitError('Initialization failed');
+        }
       } finally {
+        if (initTimer) clearTimeout(initTimer);
+        
         if (isMounted) {
           setLoading(false);
           setAppReady(true);
+          initAttempts.current = 0; // Reset on success
         }
       }
 
@@ -100,12 +275,24 @@ const App: React.FC = () => {
               userId: session.user.id,
               isPro: profile.is_pro || false,
             });
+            
+            setUsageInfo({
+              daily: profile.daily_usage ?? 0,
+              monthly: profile.monthly_usage ?? 0,
+              dailyLimit: profile.is_pro ? 100 : 10,
+              monthlyLimit: profile.is_pro ? 3000 : 200,
+            });
           }
         }
 
         if (event === "SIGNED_OUT") {
           setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
           setUsageInfo(null);
+        }
+        
+        // ⭐ Detect token expiration
+        if (event === "TOKEN_REFRESHED") {
+          console.log('Token auto-refreshed');
         }
       });
 
@@ -117,15 +304,23 @@ const App: React.FC = () => {
     return () => {
       isMounted = false;
       if (authSubscription) authSubscription.unsubscribe();
+      if (initTimer) clearTimeout(initTimer);
     };
   }, [client, isReady]);
 
-  /* ⭐⭐⭐ Supabase 준비 대기 (핵심 해결 코드) ⭐⭐⭐ */
   const waitForClient = async (): Promise<any> => {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        reject(new Error('Supabase client timeout'));
+      }, 5000);
+      
       const check = () => {
-        if (client) resolve(client);
-        else setTimeout(check, 100);
+        if (client) {
+          clearTimeout(timeout);
+          resolve(client);
+        } else {
+          setTimeout(check, 100);
+        }
       };
       check();
     });
@@ -137,25 +332,45 @@ const App: React.FC = () => {
     setError(null);
     setResult(null);
 
-    // ⭐⭐⭐ 핵심: Supabase 준비될때까지 기다림
-    const supabase = await waitForClient();
-
-    if (!user.isLoggedIn) {
-      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
-      const usage = parseInt(localStorage.getItem(todayKey) || "0");
-
-      if (usage >= ANONYMOUS_DAILY_LIMIT) {
-        setStep("recharge");
-        return;
+    try {
+      const supabase = await waitForClient();
+      
+      // Validate session for logged-in users
+      if (user.isLoggedIn) {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error || !session) {
+          console.warn('Session expired - re-login required');
+          setError('Your session has expired. Please log in again.');
+          await signOut(supabase);
+          setStep('login');
+          return;
+        }
+        
+        // Refresh if session about to expire
+        const expiresAt = session.expires_at;
+        const now = Math.floor(Date.now() / 1000);
+        if (expiresAt && (expiresAt - now) < 300) {
+          console.log('Session about to expire - refreshing...');
+          await refreshSession();
+        }
       }
 
-      localStorage.setItem(todayKey, String(usage + 1));
-    }
+      if (!user.isLoggedIn) {
+        const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+        const usage = parseInt(localStorage.getItem(todayKey) || "0");
 
-    setInput(text);
-    setStep("processing");
+        if (usage >= ANONYMOUS_DAILY_LIMIT) {
+          setStep("recharge");
+          return;
+        }
 
-    try {
+        localStorage.setItem(todayKey, String(usage + 1));
+      }
+
+      setInput(text);
+      setStep("processing");
+
       const data = await analyzeText(supabase, text);
       if (!data) throw new Error("No AI response");
 
@@ -183,23 +398,46 @@ const App: React.FC = () => {
 
     } catch (err: any) {
       console.error("ANALYZE ERROR:", err);
-      setError(err.message || "Analysis failed");
+      
+      // ⭐ Network error handling
+      if (err.message?.includes('Failed to fetch') || err.message?.includes('network')) {
+        setError('Please check your network connection');
+      } else if (err.message?.includes('timeout')) {
+        setError('Request timed out. Please try again.');
+      } else {
+        setError(err.message || "Analysis failed");
+      }
+      
       setStep("input");
     }
 
-  }, [user, client]);
+  }, [user, client, refreshSession]);
 
   /* ---------------- OTHER HANDLERS ---------------- */
 
   const handleReset = () => {
-  // 완전 새로고침
-  window.location.reload();
+    window.location.reload();
   };
 
   const handleSignOut = async () => {
-    if (!client) return;
-    await signOut(client);
-    setStep("input");
+    if (!client) {
+      // Force logout if client unavailable
+      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      setUsageInfo(null);
+      setStep("input");
+      return;
+    }
+    
+    try {
+      await signOut(client);
+      setStep("input");
+    } catch (err) {
+      console.error('Sign out error:', err);
+      // Force local state reset on error
+      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      setUsageInfo(null);
+      setStep("input");
+    }
   };
 
   const handlePaymentSuccess = async () => {
@@ -218,10 +456,39 @@ const App: React.FC = () => {
 
   /* ---------------- RENDER ---------------- */
 
+  // ⭐ Initialization loading screen
   if (!isReady || !client || !appReady || loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
+      <div className="min-h-screen flex flex-col items-center justify-center bg-white">
+        <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin mb-4"></div>
+        {loading && (
+          <p className="text-xs text-gray-400 animate-pulse">
+            Preparing connection...
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  // ⭐ Initialization error screen
+  if (initError) {
+    return (
+      <div className="min-h-screen flex flex-col items-center justify-center bg-white px-8">
+        <div className="w-16 h-16 bg-red-50 rounded-full flex items-center justify-center mb-4">
+          <svg className="w-8 h-8 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+        </div>
+        <h2 className="text-lg font-bold mb-2">{initError}</h2>
+        <p className="text-sm text-gray-500 mb-6 text-center">
+          Please refresh the page or try again later
+        </p>
+        <button
+          onClick={() => window.location.reload()}
+          className="px-6 py-2 bg-black text-white text-sm font-bold rounded-lg hover:bg-gray-800"
+        >
+          Refresh
+        </button>
       </div>
     );
   }
@@ -229,6 +496,14 @@ const App: React.FC = () => {
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
+
+        {/* ⭐ Reconnecting indicator */}
+        {isReconnecting && (
+          <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold flex items-center gap-2">
+            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+            Reconnecting...
+          </div>
+        )}
 
         {/* NAV */}
         <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
