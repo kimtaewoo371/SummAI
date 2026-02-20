@@ -34,20 +34,6 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  /* ================= DEBUG: 상태 추적 ================= */
-  useEffect(() => {
-    console.log("STEP CHANGED →", step);
-  }, [step]);
-
-  useEffect(() => {
-    console.log("READY STATE →", {
-      isReady,
-      hasClient: !!client,
-      appReady,
-      loading,
-    });
-  }, [isReady, client, appReady, loading]);
-
   /* ================= AUTH INIT ================= */
   useEffect(() => {
     let isMounted = true;
@@ -56,19 +42,13 @@ const App: React.FC = () => {
     const initAuth = async () => {
       if (!client) return;
 
-      console.log("INIT AUTH START");
-
       try {
         const {
           data: { session },
         } = await client.auth.getSession();
 
-        console.log("SESSION →", session);
-
         if (session?.user && isMounted) {
           const profile = await getProfile(client, session.user.id);
-
-          console.log("PROFILE →", profile);
 
           if (profile && isMounted) {
             setUser({
@@ -78,21 +58,26 @@ const App: React.FC = () => {
               userId: session.user.id,
               isPro: profile.is_pro || false,
             });
+
+            setUsageInfo({
+              daily: profile.daily_usage ?? 0,
+              monthly: profile.monthly_usage ?? 0,
+              dailyLimit: profile.is_pro ? 100 : 10,
+              monthlyLimit: profile.is_pro ? 3000 : 200,
+            });
           }
         }
       } catch (err) {
-        console.error("AUTH INIT ERROR:", err);
+        console.error("Auth init error:", err);
       } finally {
         if (isMounted) {
           setLoading(false);
           setAppReady(true);
-          console.log("AUTH INIT COMPLETE");
         }
       }
 
       const { data } = client.auth.onAuthStateChange(
         async (event, session) => {
-          console.log("AUTH EVENT:", event);
           if (!isMounted) return;
 
           if (
@@ -117,6 +102,7 @@ const App: React.FC = () => {
               usageCount: 0,
               isPro: false,
             });
+            setUsageInfo(null);
           }
         }
       );
@@ -132,48 +118,84 @@ const App: React.FC = () => {
     };
   }, [client, isReady]);
 
+  /* ================= EDGE WARM-UP ================= */
+  useEffect(() => {
+    if (!client) return;
+
+    // 첫 진입 시 Edge Function 깨워두기
+    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+      method: "OPTIONS",
+    }).catch(() => {});
+  }, [client]);
+
   /* ================= ANALYZE ================= */
   const handleProcess = useCallback(
     async (text: string) => {
-      console.log("HANDLE PROCESS START");
-
       if (!isReady || !client || loading || step === "processing") {
-        console.log("BLOCKED:", {
-          isReady,
-          hasClient: !!client,
-          loading,
-          step,
-        });
         return;
       }
 
       setError(null);
       setResult(null);
 
+      // 비로그인 사용자 제한
+      if (!user.isLoggedIn) {
+        const todayKey = `anonymous_usage_${new Date()
+          .toISOString()
+          .slice(0, 10)}`;
+
+        const usage = parseInt(localStorage.getItem(todayKey) || "0");
+
+        if (usage >= ANONYMOUS_DAILY_LIMIT) {
+          setStep("recharge");
+          return;
+        }
+
+        localStorage.setItem(todayKey, String(usage + 1));
+      }
+
       setInput(text);
       setStep("processing");
 
       try {
-        console.log("CALLING analyzeText...");
         const data = await analyzeText(client, text);
-        console.log("analyzeText RESPONSE:", data);
 
         if (!data) throw new Error("No AI response");
 
         setResult(data);
         setStep("result");
+
+        if (user.isLoggedIn && user.userId) {
+          const updatedProfile = await incrementUsageCount(
+            client,
+            user.userId,
+            text.length,
+            data.resultText?.length || 0,
+            0
+          );
+
+          setUsageInfo({
+            daily: updatedProfile.daily_usage,
+            monthly: updatedProfile.monthly_usage,
+            dailyLimit: updatedProfile.is_pro ? 100 : 10,
+            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
+          });
+
+          setUser((prev) => ({
+            ...prev,
+            usageCount: updatedProfile.daily_usage,
+          }));
+        }
       } catch (err: any) {
-        console.error("ANALYZE ERROR:", err);
         setError(err.message || "Analysis failed");
         setStep("input");
       }
     },
-    [user, client, isReady, loading, step]
+    [client, isReady, loading, step, user]
   );
 
-  /* ================= RESET ================= */
+  /* ================= HANDLERS ================= */
   const handleReset = () => {
-    console.log("RESET TRIGGERED");
     window.location.reload();
   };
 
@@ -183,9 +205,27 @@ const App: React.FC = () => {
     setStep("input");
   };
 
-  /* ================= LOADING GATE ================= */
+  const handlePaymentSuccess = async () => {
+    if (client && user.userId) {
+      const profile = await getProfile(client, user.userId);
+      if (profile) {
+        setUser((prev) => ({
+          ...prev,
+          isPro: !!profile.is_pro,
+        }));
+      }
+    }
+    setStep("input");
+  };
+
+  const remainingDaily = usageInfo
+    ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
+    : !user.isLoggedIn
+    ? Math.max(0, ANONYMOUS_DAILY_LIMIT)
+    : null;
+
+  /* ================= GLOBAL LOADING ================= */
   if (!isReady || !client || !appReady || loading) {
-    console.log("GLOBAL LOADING SCREEN");
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
@@ -200,13 +240,21 @@ const App: React.FC = () => {
         clientId: import.meta.env.VITE_PAYPAL_CLIENT_ID || "",
       }}
     >
-      <div className="min-h-screen bg-white">
+      <div className="min-h-screen text-gray-900 font-sans bg-white">
         <main className="pt-16">
           {step === "input" && (
-            <Landing
-              onProcess={handleProcess}
-              disabled={!isReady || !client || !appReady || loading}
-            />
+            <>
+              {error && (
+                <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">
+                  {error}
+                </div>
+              )}
+
+              <Landing
+                onProcess={handleProcess}
+                disabled={!isReady || !client || !appReady || loading}
+              />
+            </>
           )}
 
           {step === "processing" && <Loading />}
@@ -237,7 +285,7 @@ const App: React.FC = () => {
           {step === "payment" && (
             <PaymentPage
               userId={user.userId}
-              onSuccess={() => setStep("input")}
+              onSuccess={handlePaymentSuccess}
               onCancel={() => setStep("recharge")}
             />
           )}
