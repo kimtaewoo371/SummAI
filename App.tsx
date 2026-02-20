@@ -20,7 +20,6 @@ import {
 const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
-  // useSupabase에서 client를 직접 감시합니다.
   const { client, isReady } = useSupabase();
 
   const paypalOptions = {
@@ -34,6 +33,8 @@ const App: React.FC = () => {
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  
+  // 초기 로딩 상태는 true로 시작
   const [loading, setLoading] = useState<boolean>(true);
 
   const [usageInfo, setUsageInfo] = useState<{
@@ -49,23 +50,28 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 인증 및 프로필 로드 (안전성 강화 버전) ───
+  // ─── 초기 인증 & 프로필 로드 (수정 핵심 로직) ───
   useEffect(() => {
+    console.log('🔍 App useEffect - isReady:', isReady, 'client:', !!client);
+    
+    // 1. 라이브러리가 로드되지 않았다면 로딩 유지 후 대기
+    if (!isReady || !client) { 
+      return; 
+    }
+
     let isMounted = true;
-    let authSubscription: any = null;
 
     const initializeAuth = async () => {
-      // client가 없으면 아직 준비 중이므로 대기
-      if (!client) return;
-
       try {
-        // 세션 확인
+        console.log('🔍 Fetching session...');
         const { data: { session }, error: sessionError } = await client.auth.getSession();
         
-        if (sessionError && sessionError.name !== 'AbortError') throw sessionError;
+        if (sessionError) throw sessionError;
         
         if (session?.user && isMounted) {
+          console.log('🔍 Session found, loading profile...');
           const profile = await getProfile(client, session.user.id);
+          
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
@@ -81,55 +87,64 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
+        } else {
+          console.log('✅ No session, continuing as Guest');
         }
-      } catch (err: any) {
-        if (err.name !== 'AbortError') console.error('❌ Auth Error:', err);
+      } catch (err) {
+        console.error('❌ Initialization failed:', err);
       } finally {
-        if (isMounted) setLoading(false);
-      }
-
-      // 상태 변화 리스너
-      const { data } = client.auth.onAuthStateChange(async (event, session) => {
-        if (!isMounted) return;
-        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-          const profile = await getProfile(client, session.user.id);
-          if (isMounted && profile) {
-            setUser({
-              isLoggedIn: true,
-              usageCount: profile.usage_count,
-              email: profile.email,
-              userId: session.user.id,
-              isPro: profile.is_pro || false,
-            });
-          }
-        } else if (event === 'SIGNED_OUT') {
-          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
-          setUsageInfo(null);
+        if (isMounted) {
+          setLoading(false); // 이 코드가 실행되어야 무한 로딩이 풀립니다.
         }
-      });
-      authSubscription = data.subscription;
+      }
     };
 
     initializeAuth();
 
-    // 5초 후에도 로딩 중이면 무조건 해제 (네트워크 지연 대비)
-    const safetyTimer = setTimeout(() => {
-      if (isMounted && loading) setLoading(false);
-    }, 5000);
+    // 인증 상태 변화 감지
+    const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
+      console.log('🔍 Auth State Change:', event);
+      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+        const profile = await getProfile(client, session.user.id);
+        if (isMounted && profile) {
+          setUser({
+            isLoggedIn: true,
+            usageCount: profile.usage_count,
+            email: profile.email,
+            userId: session.user.id,
+            isPro: profile.is_pro || false,
+          });
+          setUsageInfo({
+            daily: profile.daily_usage ?? 0,
+            monthly: profile.monthly_usage ?? 0,
+            dailyLimit: profile.is_pro ? 100 : 10,
+            monthlyLimit: profile.is_pro ? 3000 : 200,
+          });
+        }
+      } else if (event === 'SIGNED_OUT') {
+        if (isMounted) {
+          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+          setUsageInfo(null);
+        }
+      }
+    });
 
     return () => { 
       isMounted = false; 
-      clearTimeout(safetyTimer);
-      if (authSubscription) authSubscription.unsubscribe(); 
+      subscription.unsubscribe(); 
     };
-  }, [client, isReady]); // client 존재 여부를 주요 트리거로 사용
+  }, [isReady, client]); // 의존성 배열 유지
 
-  // ... (handleProcess, handleReset 등 나머지 로직은 동일)
   const handleProcess = useCallback(async (text: string) => {
-    if (!client) return;
+    if (!isReady || !client) {
+      setError('System is initializing. Please wait...');
+      return;
+    }
+
     setError(null);
     setResult(null);
 
+    // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
       const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
@@ -139,16 +154,29 @@ const App: React.FC = () => {
       }
     }
 
+    // 로그인 사용자 DB 기반 제한
+    if (user.isLoggedIn && usageInfo) {
+      if (usageInfo.daily >= usageInfo.dailyLimit) {
+        setError(`일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
+        if (!user.isPro) setStep('recharge');
+        return;
+      }
+    }
+
     setInput(text);
     setStep('processing');
 
     try {
       const data = await analyzeText(client, text);
+
       if (data) {
         setResult(data);
         setStep('result');
+
         if (user.isLoggedIn && user.userId) {
-          const updatedProfile = await incrementUsageCount(client, user.userId, text.length, data.resultText?.length || 0, 0);
+          const updatedProfile = await incrementUsageCount(
+            client, user.userId, text.length, data.resultText?.length || 0, 0
+          );
           setUsageInfo({
             daily: updatedProfile.daily_usage,
             monthly: updatedProfile.monthly_usage,
@@ -156,13 +184,19 @@ const App: React.FC = () => {
             monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
           });
           setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
+        } else {
+          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          const usage = parseInt(localStorage.getItem(todayKey) || '0');
+          localStorage.setItem(todayKey, (usage + 1).toString());
+          setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
         }
       }
-    } catch (err: any) {
-      setError(err.message || 'Analysis failed');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Analysis failed';
+      setError(message);
       setStep('input');
     }
-  }, [user, client]);
+  }, [user, usageInfo, isReady, client]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -171,20 +205,27 @@ const App: React.FC = () => {
   const handleSignOut = async () => {
     if (!client) return;
     try { await signOut(client); setStep('input'); }
-    catch (err) { console.error(err); }
+    catch (err) { console.error('Sign out error:', err); }
   };
 
-  const handlePaymentSuccess = useCallback(async () => {
+  const handlePaymentSuccess = useCallback(async (_subscriptionId: string) => {
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
-        setUser(prev => ({ ...prev, isPro: !!profile.is_pro }));
+        setUser(prev => ({ ...prev, isPro: profile.is_pro || false }));
+        setUsageInfo({
+          daily: profile.daily_usage ?? 0,
+          monthly: profile.monthly_usage ?? 0,
+          dailyLimit: 100,
+          monthlyLimit: 3000,
+        });
       }
     }
     setStep('input');
   }, [client, user.userId]);
 
-  if (loading) {
+  // ─── 렌더링 로직 (무한 로딩 방지 핵심) ───
+  if (loading || !isReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin"></div>
@@ -194,29 +235,40 @@ const App: React.FC = () => {
 
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
-    : !user.isLoggedIn ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount) : null;
+    : !user.isLoggedIn
+    ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount)
+    : null;
 
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
         <nav className="fixed top-0 left-0 right-0 h-16 border-b border-gray-100 bg-white/95 backdrop-blur-sm z-40 flex items-center justify-between px-8">
           <div className="flex items-center gap-3 cursor-pointer" onClick={() => setStep('input')}>
-            <div className="w-8 h-8 bg-black rounded flex items-center justify-center relative">
+            <div className="w-8 h-8 bg-black rounded flex items-center justify-center">
               <div className="w-4 h-0.5 bg-white rounded-full rotate-45 translate-y-[-1px]"></div>
               <div className="w-4 h-0.5 bg-white rounded-full -rotate-45 translate-y-[1px] absolute"></div>
             </div>
             <span className="font-black text-lg tracking-tight">SummAI</span>
           </div>
+
           <div className="flex items-center gap-8">
-            {user.isPro && <span className="text-[10px] font-bold bg-black text-white px-3 py-1 rounded-full uppercase">PRO</span>}
-            {remainingDaily !== null && <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">{remainingDaily} Left</span>}
+            {user.isPro && (
+              <span className="text-[10px] font-bold bg-black text-white uppercase tracking-widest px-3 py-1 rounded-full">
+                PRO
+              </span>
+            )}
+            {remainingDaily !== null && (
+              <span className="text-[10px] font-bold text-gray-400 uppercase tracking-widest">
+                {remainingDaily} Uses Left Today
+              </span>
+            )}
             {user.isLoggedIn ? (
               <div className="flex items-center gap-6">
-                <span className="text-xs font-bold text-gray-400">{user.email}</span>
-                <button onClick={handleSignOut} className="text-[10px] font-black uppercase hover:text-black">Sign Out</button>
+                <span className="text-xs font-bold text-gray-400 uppercase tracking-widest">{user.email}</span>
+                <button onClick={handleSignOut} className="text-[10px] font-black uppercase tracking-widest hover:text-black">Sign Out</button>
               </div>
             ) : (
-              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase hover:text-gray-500">Log In</button>
+              <button onClick={() => setStep('login')} className="text-[10px] font-black uppercase tracking-widest hover:text-gray-500">Log In</button>
             )}
             <button onClick={() => setStep('recharge')} className="p-2 hover:bg-gray-100 rounded-lg border border-gray-100">
               <svg className="w-5 h-5 text-black" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -225,18 +277,39 @@ const App: React.FC = () => {
             </button>
           </div>
         </nav>
+
         <main className="pt-16">
           {step === 'input' && (
             <>
-              {error && <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">{error}</div>}
+              {error && (
+                <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold uppercase tracking-widest">
+                  {error}
+                </div>
+              )}
               <Landing onProcess={handleProcess} />
             </>
           )}
           {step === 'processing' && <Loading />}
-          {step === 'result' && result && <ResultView input={input} result={result} onReset={handleReset} />}
-          {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
-          {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
-          {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={handlePaymentSuccess} onCancel={() => setStep('recharge')} />}
+          {step === 'result' && result && (
+            <ResultView input={input} result={result} onReset={handleReset} />
+          )}
+          {step === 'login' && (
+            <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />
+          )}
+          {step === 'recharge' && (
+            <RechargePage
+              onBack={() => setStep('input')}
+              onLogin={() => setStep('login')}
+              onUpgrade={() => setStep('payment')}
+            />
+          )}
+          {step === 'payment' && (
+            <PaymentPage
+              userId={user.userId}
+              onSuccess={handlePaymentSuccess}
+              onCancel={() => setStep('recharge')}
+            />
+          )}
         </main>
       </div>
     </PayPalScriptProvider>
