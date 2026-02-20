@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
 import { AppStep, AnalysisResult, UserState } from './types';
@@ -18,6 +18,7 @@ import {
 } from './services/supabaseClient';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
+const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5분
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
@@ -34,7 +35,6 @@ const App: React.FC = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   
-  // 초기 로딩 상태는 true로 시작
   const [loading, setLoading] = useState<boolean>(true);
 
   const [usageInfo, setUsageInfo] = useState<{
@@ -50,11 +50,36 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ─── 초기 인증 & 프로필 로드 (수정 핵심 로직) ───
+  // ⭐ 추가: 세션 관리용
+  const sessionRefreshTimer = useRef<NodeJS.Timeout | null>(null);
+  const lastActivityTime = useRef<number>(Date.now());
+
+  // ⭐ 추가: 세션 갱신 함수
+  const refreshSession = useCallback(async () => {
+    if (!client) return false;
+    
+    try {
+      const { data: { session }, error } = await client.auth.refreshSession();
+      
+      if (error) {
+        console.warn('Session refresh failed:', error);
+        return false;
+      }
+      
+      if (session?.user) {
+        console.log('Session refreshed successfully');
+        return true;
+      }
+    } catch (err) {
+      console.error('Session refresh error:', err);
+    }
+    return false;
+  }, [client]);
+
+  // ─── 초기 인증 & 프로필 로드 ───
   useEffect(() => {
     console.log('🔍 App useEffect - isReady:', isReady, 'client:', !!client);
     
-    // 1. 라이브러리가 로드되지 않았다면 로딩 유지 후 대기
     if (!isReady || !client) { 
       return; 
     }
@@ -94,14 +119,13 @@ const App: React.FC = () => {
         console.error('❌ Initialization failed:', err);
       } finally {
         if (isMounted) {
-          setLoading(false); // 이 코드가 실행되어야 무한 로딩이 풀립니다.
+          setLoading(false);
         }
       }
     };
 
     initializeAuth();
 
-    // 인증 상태 변화 감지
     const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
       console.log('🔍 Auth State Change:', event);
       if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
@@ -133,7 +157,53 @@ const App: React.FC = () => {
       isMounted = false; 
       subscription.unsubscribe(); 
     };
-  }, [isReady, client]); // 의존성 배열 유지
+  }, [isReady, client]);
+
+  // ⭐ 추가: 주기적 세션 체크 (로그인 상태일 때만)
+  useEffect(() => {
+    if (!client || !user.isLoggedIn) return;
+
+    // 5분마다 세션 갱신
+    sessionRefreshTimer.current = setInterval(() => {
+      refreshSession();
+    }, SESSION_REFRESH_INTERVAL);
+
+    return () => {
+      if (sessionRefreshTimer.current) {
+        clearInterval(sessionRefreshTimer.current);
+      }
+    };
+  }, [client, user.isLoggedIn, refreshSession]);
+
+  // ⭐ 추가: 탭 재활성화시 세션 복구
+  useEffect(() => {
+    const handleVisibilityChange = async () => {
+      if (!document.hidden && client && user.isLoggedIn) {
+        const inactiveTime = Date.now() - lastActivityTime.current;
+        
+        // 5분 이상 비활성화되었으면 세션 갱신
+        if (inactiveTime > SESSION_REFRESH_INTERVAL) {
+          console.log('Tab reactivated - refreshing session');
+          const success = await refreshSession();
+          
+          if (!success) {
+            // 세션 갱신 실패시 재로그인 유도
+            setError('Your session has expired. Please log in again.');
+            await signOut(client);
+            setStep('login');
+          }
+        }
+        
+        lastActivityTime.current = Date.now();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [client, user.isLoggedIn, refreshSession]);
 
   const handleProcess = useCallback(async (text: string) => {
     if (!isReady || !client) {
@@ -143,6 +213,18 @@ const App: React.FC = () => {
 
     setError(null);
     setResult(null);
+
+    // ⭐ 추가: 로그인 사용자는 분석 전 세션 체크
+    if (user.isLoggedIn && user.userId) {
+      const { data: { session }, error: sessionError } = await client.auth.getSession();
+      
+      if (sessionError || !session) {
+        setError('Your session has expired. Please log in again.');
+        await signOut(client);
+        setStep('login');
+        return;
+      }
+    }
 
     // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
@@ -157,7 +239,7 @@ const App: React.FC = () => {
     // 로그인 사용자 DB 기반 제한
     if (user.isLoggedIn && usageInfo) {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
-        setError(`일일 한도 초과 (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
+        setError(`Daily limit exceeded (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
         if (!user.isPro) setStep('recharge');
         return;
       }
@@ -196,7 +278,7 @@ const App: React.FC = () => {
       setError(message);
       setStep('input');
     }
-  }, [user, usageInfo, isReady, client]);
+  }, [user, usageInfo, isReady, client, refreshSession]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
@@ -204,8 +286,19 @@ const App: React.FC = () => {
 
   const handleSignOut = async () => {
     if (!client) return;
-    try { await signOut(client); setStep('input'); }
-    catch (err) { console.error('Sign out error:', err); }
+    try { 
+      await signOut(client); 
+      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      setUsageInfo(null);
+      setStep('input'); 
+    }
+    catch (err) { 
+      console.error('Sign out error:', err);
+      // ⭐ 추가: 에러나도 강제 로그아웃
+      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      setUsageInfo(null);
+      setStep('input');
+    }
   };
 
   const handlePaymentSuccess = useCallback(async (_subscriptionId: string) => {
@@ -224,7 +317,6 @@ const App: React.FC = () => {
     setStep('input');
   }, [client, user.userId]);
 
-  // ─── 렌더링 로직 (무한 로딩 방지 핵심) ───
   if (loading || !isReady) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
