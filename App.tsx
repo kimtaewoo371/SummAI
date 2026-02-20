@@ -192,10 +192,8 @@ const App: React.FC = () => {
   /* ---------------- OTHER HANDLERS ---------------- */
 
   const handleReset = () => {
-    setResult(null);
-    setInput("");
-    setError(null);
-    setStep("input");
+  // 완전 새로고침
+  window.location.reload();
   };
 
   const handleSignOut = async () => {
