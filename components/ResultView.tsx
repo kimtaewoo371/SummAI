@@ -9,13 +9,20 @@ interface ResultViewProps {
 
 const ResultView: React.FC<ResultViewProps> = ({ input, result, onReset }) => {
   const copyAsEmail = () => {
-    const text = `Hi Team,\n\nI've summarized the document. Here's the key takeaway (BLUF):\n${result.executive_summary}\n\nSuggested Reply:\n${result.suggested_reply}\n\nBest regards,\n[Your Name]`;
+    const text = `Hi Team,
+
+${result.executive_summary}
+
+${result.suggested_reply}
+
+Best regards,
+[Your Name]`;
     navigator.clipboard.writeText(text);
     alert('Copied as Email Draft!');
   };
 
   const copyAsSlack = () => {
-    const text = `*BLUF:* ${result.executive_summary}\n\n*Next Steps:*\n${result.action_items.map(i => `• ${i.task} (${i.owner} by ${i.deadline})`).join('\n')}`;
+    const text = `${result.executive_summary}\n\n*Action Items:*\n${result.action_items.map(i => `• ${i.task} (${i.owner} by ${i.deadline})`).join('\n')}`;
     navigator.clipboard.writeText(text);
     alert('Copied as Slack Note!');
   };
