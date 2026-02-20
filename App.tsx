@@ -1,4 +1,4 @@
-// App.tsx - 완전한 버전
+// App.tsx - 최종 완전 버전
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
@@ -312,7 +312,7 @@ const App: React.FC = () => {
       
       const timeout = setTimeout(() => {
         reject(new Error('Supabase client timeout'));
-      }, 10000); // 10초
+      }, 10000);
       
       const check = () => {
         if (client) {
@@ -347,7 +347,6 @@ const App: React.FC = () => {
           return;
         }
         
-        // 세션이 곧 만료될 예정이면 갱신
         const expiresAt = session.expires_at;
         const now = Math.floor(Date.now() / 1000);
         if (expiresAt && (expiresAt - now) < 300) {
@@ -410,7 +409,7 @@ const App: React.FC = () => {
       setStep("input");
     }
 
-  }, [user, refreshSession]);
+  }, [user, client, refreshSession]);
 
   /* ---------------- OTHER HANDLERS ---------------- */
 
@@ -450,8 +449,7 @@ const App: React.FC = () => {
 
   /* ---------------- RENDER ---------------- */
 
-  // 초기 로딩
-  if (!isReady || !appReady || loading) {
+  if (!isReady || !client || !appReady || loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white">
         <div className="w-12 h-12 border-2 border-gray-100 border-t-black rounded-full animate-spin mb-4"></div>
@@ -464,7 +462,6 @@ const App: React.FC = () => {
     );
   }
 
-  // 초기화 에러 화면
   if (initError) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white px-8">
@@ -491,7 +488,6 @@ const App: React.FC = () => {
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
 
-        {/* 재연결 중 표시 */}
         {isReconnecting && (
           <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold flex items-center gap-2">
             <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
