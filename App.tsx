@@ -1,28 +1,37 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
-import { AppStep, AnalysisResult, UserState } from "./types";
-import Landing from "./components/Landing";
-import Loading from "./components/Loading";
-import ResultView from "./components/ResultView";
-import LoginPage from "./components/LoginPage";
-import RechargePage from "./components/RechargePage";
-import PaymentPage from "./components/PaymentPage";
-import { analyzeText } from "./services/geminiService";
+
+import { AppStep, AnalysisResult, UserState } from './types';
+import Landing from './components/Landing';
+import Loading from './components/Loading';
+import ResultView from './components/ResultView';
+import LoginPage from './components/LoginPage';
+import RechargePage from './components/RechargePage';
+import PaymentPage from './components/PaymentPage';
+
+import { analyzeText } from './services/geminiService';
 import {
   useSupabase,
   getProfile,
   incrementUsageCount,
-  signOut,
-} from "./services/supabaseClient";
+  signOut
+} from './services/supabaseClient';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
 
+  const paypalOptions = {
+    clientId: import.meta.env.VITE_PAYPAL_CLIENT_ID || "",
+    currency: "USD",
+    intent: "subscription",
+    vault: true,
+  };
+
   const [appReady, setAppReady] = useState(false);
-  const [step, setStep] = useState<AppStep>("input");
-  const [input, setInput] = useState<string>("");
+  const [step, setStep] = useState<AppStep>('input');
+  const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
@@ -34,23 +43,20 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  /* ================= AUTH INIT ================= */
-  useEffect(() => {
-    let isMounted = true;
-    let authSubscription: any = null;
+  /* ---------------- AUTH INIT ---------------- */
 
-    const initAuth = async () => {
+  useEffect(() => {
+    let mounted = true;
+
+    const init = async () => {
       if (!client) return;
 
       try {
-        const {
-          data: { session },
-        } = await client.auth.getSession();
+        const { data: { session } } = await client.auth.getSession();
 
-        if (session?.user && isMounted) {
+        if (session?.user && mounted) {
           const profile = await getProfile(client, session.user.id);
-
-          if (profile && isMounted) {
+          if (profile && mounted) {
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -67,137 +73,71 @@ const App: React.FC = () => {
             });
           }
         }
-      } catch (err) {
-        console.error("Auth init error:", err);
+      } catch (e) {
+        console.error("Auth error:", e);
       } finally {
-        if (isMounted) {
+        if (mounted) {
           setLoading(false);
           setAppReady(true);
         }
       }
-
-      const { data } = client.auth.onAuthStateChange(
-        async (event, session) => {
-          if (!isMounted) return;
-
-          if (
-            (event === "SIGNED_IN" || event === "USER_UPDATED") &&
-            session?.user
-          ) {
-            const profile = await getProfile(client, session.user.id);
-            if (profile && isMounted) {
-              setUser({
-                isLoggedIn: true,
-                usageCount: profile.usage_count,
-                email: profile.email,
-                userId: session.user.id,
-                isPro: profile.is_pro || false,
-              });
-            }
-          }
-
-          if (event === "SIGNED_OUT") {
-            setUser({
-              isLoggedIn: false,
-              usageCount: 0,
-              isPro: false,
-            });
-            setUsageInfo(null);
-          }
-        }
-      );
-
-      authSubscription = data.subscription;
     };
 
-    if (isReady && client) initAuth();
-
-    return () => {
-      isMounted = false;
-      if (authSubscription) authSubscription.unsubscribe();
-    };
+    if (isReady && client) init();
+    return () => { mounted = false; };
   }, [client, isReady]);
 
-  /* ================= EDGE WARM-UP ================= */
-  useEffect(() => {
+  const handleProcess = useCallback(async (text: string) => {
     if (!client) return;
 
-    // 첫 진입 시 Edge Function 깨워두기
-    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rapid-function`, {
-      method: "OPTIONS",
-    }).catch(() => {});
-  }, [client]);
+    setError(null);
+    setResult(null);
 
-  /* ================= ANALYZE ================= */
-  const handleProcess = useCallback(
-    async (text: string) => {
-      if (!isReady || !client || loading || step === "processing") {
+    if (!user.isLoggedIn) {
+      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const usage = parseInt(localStorage.getItem(todayKey) || "0");
+
+      if (usage >= ANONYMOUS_DAILY_LIMIT) {
+        setStep("recharge");
         return;
       }
 
-      setError(null);
-      setResult(null);
+      localStorage.setItem(todayKey, String(usage + 1));
+    }
 
-      // 비로그인 사용자 제한
-      if (!user.isLoggedIn) {
-        const todayKey = `anonymous_usage_${new Date()
-          .toISOString()
-          .slice(0, 10)}`;
+    setInput(text);
+    setStep("processing");
 
-        const usage = parseInt(localStorage.getItem(todayKey) || "0");
+    try {
+      const data = await analyzeText(client, text);
+      if (!data) throw new Error("No AI response");
 
-        if (usage >= ANONYMOUS_DAILY_LIMIT) {
-          setStep("recharge");
-          return;
-        }
+      setResult(data);
+      setStep("result");
 
-        localStorage.setItem(todayKey, String(usage + 1));
+      if (user.isLoggedIn && user.userId) {
+        const updatedProfile = await incrementUsageCount(
+          client,
+          user.userId,
+          text.length,
+          data.resultText?.length || 0,
+          0
+        );
+
+        setUsageInfo({
+          daily: updatedProfile.daily_usage,
+          monthly: updatedProfile.monthly_usage,
+          dailyLimit: updatedProfile.is_pro ? 100 : 10,
+          monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
+        });
       }
 
-      setInput(text);
-      setStep("processing");
-
-      try {
-        const data = await analyzeText(client, text);
-
-        if (!data) throw new Error("No AI response");
-
-        setResult(data);
-        setStep("result");
-
-        if (user.isLoggedIn && user.userId) {
-          const updatedProfile = await incrementUsageCount(
-            client,
-            user.userId,
-            text.length,
-            data.resultText?.length || 0,
-            0
-          );
-
-          setUsageInfo({
-            daily: updatedProfile.daily_usage,
-            monthly: updatedProfile.monthly_usage,
-            dailyLimit: updatedProfile.is_pro ? 100 : 10,
-            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
-          });
-
-          setUser((prev) => ({
-            ...prev,
-            usageCount: updatedProfile.daily_usage,
-          }));
-        }
-      } catch (err: any) {
-        setError(err.message || "Analysis failed");
-        setStep("input");
-      }
-    },
-    [client, isReady, loading, step, user]
-  );
-
-  /* ================= HANDLERS ================= */
-  const handleReset = () => {
-    window.location.reload();
-  };
+    } catch (err: any) {
+      console.error("ANALYZE ERROR:", err);
+      setError(err.message || "Analysis failed");
+      setStep("input");
+    }
+  }, [user, client]);
 
   const handleSignOut = async () => {
     if (!client) return;
@@ -205,26 +145,10 @@ const App: React.FC = () => {
     setStep("input");
   };
 
-  const handlePaymentSuccess = async () => {
-    if (client && user.userId) {
-      const profile = await getProfile(client, user.userId);
-      if (profile) {
-        setUser((prev) => ({
-          ...prev,
-          isPro: !!profile.is_pro,
-        }));
-      }
-    }
-    setStep("input");
-  };
-
   const remainingDaily = usageInfo
     ? Math.max(0, usageInfo.dailyLimit - usageInfo.daily)
-    : !user.isLoggedIn
-    ? Math.max(0, ANONYMOUS_DAILY_LIMIT)
     : null;
 
-  /* ================= GLOBAL LOADING ================= */
   if (!isReady || !client || !appReady || loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -233,63 +157,60 @@ const App: React.FC = () => {
     );
   }
 
-  /* ================= RENDER ================= */
   return (
-    <PayPalScriptProvider
-      options={{
-        clientId: import.meta.env.VITE_PAYPAL_CLIENT_ID || "",
-      }}
-    >
-      <div className="min-h-screen text-gray-900 font-sans bg-white">
-        <main className="pt-16">
-          {step === "input" && (
-            <>
-              {error && (
-                <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-black text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold">
-                  {error}
-                </div>
+    <PayPalScriptProvider options={paypalOptions}>
+      <div className="flex min-h-screen bg-white text-gray-900">
+
+        {/* ===== SIDEBAR 복구 ===== */}
+        <aside className="w-64 border-r border-gray-100 fixed left-0 top-0 h-screen bg-white z-30">
+          <div className="p-6 font-black text-xl">SummAI</div>
+          <div className="px-6 space-y-4 text-sm">
+            <button onClick={() => setStep("input")} className="block hover:text-black text-gray-500">
+              New Analysis
+            </button>
+            <button onClick={() => setStep("recharge")} className="block hover:text-black text-gray-500">
+              Upgrade
+            </button>
+          </div>
+        </aside>
+
+        {/* ===== MAIN AREA ===== */}
+        <div className="flex-1 ml-64">
+
+          {/* NAV */}
+          <nav className="h-16 border-b border-gray-100 bg-white flex items-center justify-end px-8">
+            <div className="flex items-center gap-8">
+              {user.isPro && <span className="text-xs font-bold bg-black text-white px-3 py-1 rounded-full">PRO</span>}
+              {remainingDaily !== null && <span className="text-xs text-gray-400">{remainingDaily} Left</span>}
+
+              {user.isLoggedIn ? (
+                <button onClick={handleSignOut} className="text-xs font-bold">
+                  Sign Out
+                </button>
+              ) : (
+                <button onClick={() => setStep("login")} className="text-xs font-bold">
+                  Log In
+                </button>
               )}
+            </div>
+          </nav>
 
-              <Landing
-                onProcess={handleProcess}
-                disabled={!isReady || !client || !appReady || loading}
-              />
-            </>
-          )}
+          <main className="p-8">
+            {error && (
+              <div className="mb-6 bg-black text-white px-4 py-2 rounded text-xs font-bold">
+                {error}
+              </div>
+            )}
 
-          {step === "processing" && <Loading />}
+            {step === 'input' && <Landing onProcess={handleProcess} />}
+            {step === 'processing' && <Loading />}
+            {step === 'result' && result && <ResultView input={input} result={result} onReset={() => setStep("input")} />}
+            {step === 'login' && <LoginPage onLoginSuccess={() => setStep('input')} onBack={() => setStep('input')} />}
+            {step === 'recharge' && <RechargePage onBack={() => setStep('input')} onLogin={() => setStep('login')} onUpgrade={() => setStep('payment')} />}
+            {step === 'payment' && <PaymentPage userId={user.userId} onSuccess={() => setStep("input")} onCancel={() => setStep('recharge')} />}
+          </main>
 
-          {step === "result" && result && (
-            <ResultView
-              input={input}
-              result={result}
-              onReset={handleReset}
-            />
-          )}
-
-          {step === "login" && (
-            <LoginPage
-              onLoginSuccess={() => setStep("input")}
-              onBack={() => setStep("input")}
-            />
-          )}
-
-          {step === "recharge" && (
-            <RechargePage
-              onBack={() => setStep("input")}
-              onLogin={() => setStep("login")}
-              onUpgrade={() => setStep("payment")}
-            />
-          )}
-
-          {step === "payment" && (
-            <PaymentPage
-              userId={user.userId}
-              onSuccess={handlePaymentSuccess}
-              onCancel={() => setStep("recharge")}
-            />
-          )}
-        </main>
+        </div>
       </div>
     </PayPalScriptProvider>
   );
