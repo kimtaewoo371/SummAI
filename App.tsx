@@ -1,4 +1,4 @@
-// App.tsx 수정
+// App.tsx - 기존 코드에 세션 관리 기능만 추가
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
@@ -19,8 +19,8 @@ import {
 } from './services/supabaseClient';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
-const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5 minutes
-const INIT_TIMEOUT = 10000; // 10 seconds - initialization timeout
+const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5분
+const INIT_TIMEOUT = 10000; // 10초
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
@@ -33,16 +33,14 @@ const App: React.FC = () => {
   };
 
   const [appReady, setAppReady] = useState(false);
+
   const [step, setStep] = useState<AppStep>('input');
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
+
   const [usageInfo, setUsageInfo] = useState<any>(null);
-  
-  // ⭐ Initialization states
-  const [initError, setInitError] = useState<string | null>(null);
-  const [isReconnecting, setIsReconnecting] = useState(false);
 
   const [user, setUser] = useState<UserState>({
     isLoggedIn: false,
@@ -50,13 +48,14 @@ const App: React.FC = () => {
     isPro: false,
   });
 
+  // ⭐ 추가: 세션 관리를 위한 ref와 state
   const sessionRefreshTimer = useRef<NodeJS.Timeout | null>(null);
   const lastActivityTime = useRef<number>(Date.now());
   const initAttempts = useRef<number>(0);
-  const maxInitAttempts = 3;
+  const [initError, setInitError] = useState<string | null>(null);
+  const [isReconnecting, setIsReconnecting] = useState(false);
 
-  /* ---------------- SESSION REFRESH ---------------- */
-  
+  /* ⭐ 추가: 세션 갱신 함수 */
   const refreshSession = useCallback(async () => {
     if (!client) return false;
     
@@ -85,9 +84,7 @@ const App: React.FC = () => {
     return false;
   }, [client]);
 
-  /* ---------------- CONNECTION RECOVERY ---------------- */
-
-  // ⭐ Connection recovery function
+  /* ⭐ 추가: 연결 복구 함수 */
   const handleConnectionRecovery = useCallback(async () => {
     if (isReconnecting) return;
     
@@ -120,8 +117,7 @@ const App: React.FC = () => {
             }
           }
         } else {
-          console.warn('Session recovery failed - restart required');
-          // Suggest refresh on recovery failure
+          console.warn('Session recovery failed');
           setTimeout(() => {
             if (window.confirm('Connection lost. Would you like to refresh the page?')) {
               window.location.reload();
@@ -136,7 +132,7 @@ const App: React.FC = () => {
     }
   }, [client, user.isLoggedIn, refreshSession, isReconnecting]);
 
-  // ⭐ Periodic session check
+  /* ⭐ 추가: 주기적 세션 체크 */
   useEffect(() => {
     if (!client || !user.isLoggedIn) return;
 
@@ -153,13 +149,12 @@ const App: React.FC = () => {
     };
   }, [client, user.isLoggedIn, refreshSession]);
 
-  // ⭐ Tab visibility detection and session recovery
+  /* ⭐ 추가: 탭 활성화 감지 */
   useEffect(() => {
     const handleVisibilityChange = async () => {
       if (!document.hidden) {
         const inactiveTime = Date.now() - lastActivityTime.current;
         
-        // Recover connection if inactive for more than 5 minutes
         if (inactiveTime > SESSION_REFRESH_INTERVAL) {
           console.log('Tab reactivated - starting connection recovery');
           await handleConnectionRecovery();
@@ -176,7 +171,7 @@ const App: React.FC = () => {
     };
   }, [handleConnectionRecovery]);
 
-  // ⭐ Online/offline detection
+  /* ⭐ 추가: 온라인/오프라인 감지 */
   useEffect(() => {
     const handleOnline = async () => {
       console.log('Network reconnected');
@@ -197,27 +192,27 @@ const App: React.FC = () => {
     };
   }, [handleConnectionRecovery]);
 
-  /* ---------------- AUTH INIT WITH RETRY ---------------- */
+  /* ---------------- AUTH INIT (⭐ 타임아웃만 추가) ---------------- */
 
   useEffect(() => {
     let isMounted = true;
     let authSubscription: any = null;
-    let initTimer: NodeJS.Timeout | null = null;
+    let initTimer: NodeJS.Timeout | null = null; // ⭐ 추가
 
     const initAuth = async () => {
       if (!client) return;
 
-      // ⭐ Set initialization timeout
+      // ⭐ 추가: 초기화 타임아웃
       initTimer = setTimeout(() => {
         if (isMounted && loading) {
           initAttempts.current++;
           
-          if (initAttempts.current >= maxInitAttempts) {
+          if (initAttempts.current >= 3) {
             setInitError('Initialization timeout');
             setLoading(false);
             setAppReady(true);
           } else {
-            console.log(`Retrying initialization (${initAttempts.current}/${maxInitAttempts})...`);
+            console.log(`Retrying initialization (${initAttempts.current}/3)...`);
             window.location.reload();
           }
         }
@@ -248,16 +243,14 @@ const App: React.FC = () => {
         }
       } catch (err) {
         console.error("Auth init error:", err);
-        if (isMounted) {
-          setInitError('Initialization failed');
-        }
+        if (isMounted) setInitError('Initialization failed'); // ⭐ 추가
       } finally {
-        if (initTimer) clearTimeout(initTimer);
+        if (initTimer) clearTimeout(initTimer); // ⭐ 추가
         
         if (isMounted) {
           setLoading(false);
           setAppReady(true);
-          initAttempts.current = 0; // Reset on success
+          initAttempts.current = 0; // ⭐ 추가
         }
       }
 
@@ -275,13 +268,6 @@ const App: React.FC = () => {
               userId: session.user.id,
               isPro: profile.is_pro || false,
             });
-            
-            setUsageInfo({
-              daily: profile.daily_usage ?? 0,
-              monthly: profile.monthly_usage ?? 0,
-              dailyLimit: profile.is_pro ? 100 : 10,
-              monthlyLimit: profile.is_pro ? 3000 : 200,
-            });
           }
         }
 
@@ -289,8 +275,8 @@ const App: React.FC = () => {
           setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
           setUsageInfo(null);
         }
-        
-        // ⭐ Detect token expiration
+
+        // ⭐ 추가: 토큰 갱신 로그
         if (event === "TOKEN_REFRESHED") {
           console.log('Token auto-refreshed');
         }
@@ -304,10 +290,11 @@ const App: React.FC = () => {
     return () => {
       isMounted = false;
       if (authSubscription) authSubscription.unsubscribe();
-      if (initTimer) clearTimeout(initTimer);
+      if (initTimer) clearTimeout(initTimer); // ⭐ 추가
     };
   }, [client, isReady]);
 
+  /* ⭐⭐⭐ Supabase 준비 대기 (⭐ 타임아웃만 추가) ⭐⭐⭐ */
   const waitForClient = async (): Promise<any> => {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -326,16 +313,17 @@ const App: React.FC = () => {
     });
   };
 
-  /* ---------------- ANALYZE ---------------- */
+  /* ---------------- ANALYZE (⭐ 세션 검증만 추가) ---------------- */
 
   const handleProcess = useCallback(async (text: string) => {
     setError(null);
     setResult(null);
 
     try {
+      // ⭐⭐⭐ 핵심: Supabase 준비될때까지 기다림
       const supabase = await waitForClient();
-      
-      // Validate session for logged-in users
+
+      // ⭐ 추가: 로그인된 사용자 세션 검증
       if (user.isLoggedIn) {
         const { data: { session }, error } = await supabase.auth.getSession();
         
@@ -347,7 +335,7 @@ const App: React.FC = () => {
           return;
         }
         
-        // Refresh if session about to expire
+        // 세션이 곧 만료될 예정이면 갱신
         const expiresAt = session.expires_at;
         const now = Math.floor(Date.now() / 1000);
         if (expiresAt && (expiresAt - now) < 300) {
@@ -399,7 +387,7 @@ const App: React.FC = () => {
     } catch (err: any) {
       console.error("ANALYZE ERROR:", err);
       
-      // ⭐ Network error handling
+      // ⭐ 추가: 네트워크 에러 처리
       if (err.message?.includes('Failed to fetch') || err.message?.includes('network')) {
         setError('Please check your network connection');
       } else if (err.message?.includes('timeout')) {
@@ -413,15 +401,16 @@ const App: React.FC = () => {
 
   }, [user, client, refreshSession]);
 
-  /* ---------------- OTHER HANDLERS ---------------- */
+  /* ---------------- OTHER HANDLERS (⭐ 로그아웃만 수정) ---------------- */
 
   const handleReset = () => {
+    // 완전 새로고침
     window.location.reload();
   };
 
   const handleSignOut = async () => {
     if (!client) {
-      // Force logout if client unavailable
+      // ⭐ 추가: 클라이언트 없으면 강제 로그아웃
       setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
       setUsageInfo(null);
       setStep("input");
@@ -433,7 +422,7 @@ const App: React.FC = () => {
       setStep("input");
     } catch (err) {
       console.error('Sign out error:', err);
-      // Force local state reset on error
+      // ⭐ 추가: 에러나도 강제 로그아웃
       setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
       setUsageInfo(null);
       setStep("input");
@@ -454,9 +443,8 @@ const App: React.FC = () => {
       ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount)
       : null;
 
-  /* ---------------- RENDER ---------------- */
+  /* ---------------- RENDER (⭐ 초기화 에러 화면만 추가) ---------------- */
 
-  // ⭐ Initialization loading screen
   if (!isReady || !client || !appReady || loading) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white">
@@ -470,7 +458,7 @@ const App: React.FC = () => {
     );
   }
 
-  // ⭐ Initialization error screen
+  // ⭐ 추가: 초기화 에러 화면
   if (initError) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-white px-8">
@@ -497,7 +485,7 @@ const App: React.FC = () => {
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
 
-        {/* ⭐ Reconnecting indicator */}
+        {/* ⭐ 추가: 재연결 중 표시 */}
         {isReconnecting && (
           <div className="fixed top-20 left-1/2 -translate-x-1/2 bg-blue-500 text-white px-6 py-2 rounded-full z-50 text-[10px] font-bold flex items-center gap-2">
             <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
