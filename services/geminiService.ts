@@ -27,7 +27,7 @@ export const analyzeText = async (client: any, text: string): Promise<AnalysisRe
     }
 
     if (!data) {
-      throw new Error("응답 데이터가 없습니다");
+      throw new Error("There is no received data");
     }
 
     if (!data.executive_summary || !Array.isArray(data.action_items) || !data.suggested_reply) {

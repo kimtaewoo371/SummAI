@@ -123,7 +123,7 @@ const App: React.FC = () => {
     if (!client) return;
 
     // 첫 진입 시 Edge Function 깨워두기
-    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/analyze`, {
+    fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/rapid-function`, {
       method: "OPTIONS",
     }).catch(() => {});
   }, [client]);
