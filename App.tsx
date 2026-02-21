@@ -142,12 +142,30 @@ const App: React.FC = () => {
           }
         } else {
           console.log('✅ No session, continuing as Guest');
+          // 🔥 비로그인 사용자: localStorage에서 오늘의 사용량 불러오기
+          if (isMounted) {
+            const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+            const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+            console.log(`📊 Anonymous usage today: ${anonymousUsage}/${ANONYMOUS_DAILY_LIMIT}`);
+            setUser({ 
+              isLoggedIn: false, 
+              usageCount: anonymousUsage, 
+              isPro: false 
+            });
+          }
         }
       } catch (err) {
         console.error('❌ Initialization failed:', err);
         // 🔥 에러 발생시 강제 게스트 모드
         if (isMounted) {
-          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+          // 에러 시에도 localStorage 사용량 확인
+          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+          setUser({ 
+            isLoggedIn: false, 
+            usageCount: anonymousUsage, 
+            isPro: false 
+          });
           setUsageInfo(null);
         }
       } finally {
