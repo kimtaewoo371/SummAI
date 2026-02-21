@@ -38,18 +38,31 @@ export const getCurrentUser = async (client: any) => {
 //////////////////// PROFILE ////////////////////
 
 export const getProfile = async (client: any, userId: string) => {
-  const { data, error } = await client
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .single();
+  try {
+    // 타임아웃 설정 (5초)
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+    );
 
-  if (error) {
-    
+    const fetchPromise = client
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    const { data, error } = await Promise.race([fetchPromise, timeoutPromise]) as any;
+
+    if (error) {
+      console.error('❌ getProfile error:', error);
+      return null;
+    }
+
+    console.log('✅ Profile loaded:', data?.email);
+    return data;
+  } catch (err) {
+    console.error('❌ getProfile exception:', err);
     return null;
   }
-
-  return data;
 };
 
 //////////////////// USAGE ////////////////////

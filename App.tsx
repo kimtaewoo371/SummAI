@@ -59,7 +59,16 @@ const App: React.FC = () => {
     if (!client) return false;
     
     try {
-      const { data: { session }, error } = await client.auth.refreshSession();
+      // 🔥 타임아웃 추가
+      const refreshPromise = client.auth.refreshSession();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Session refresh timeout')), 5000)
+      );
+      
+      const { data: { session }, error } = await Promise.race([
+        refreshPromise,
+        timeoutPromise
+      ]) as any;
       
       if (error) {
         console.warn('Session refresh failed:', error);
@@ -85,11 +94,22 @@ const App: React.FC = () => {
     }
 
     let isMounted = true;
+    let authSubscription: any = null;
 
     const initializeAuth = async () => {
       try {
         console.log('🔍 Fetching session...');
-        const { data: { session }, error: sessionError } = await client.auth.getSession();
+        
+        // 🔥 세션 조회에도 타임아웃 추가
+        const sessionPromise = client.auth.getSession();
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Session fetch timeout')), 5000)
+        );
+        
+        const { data: { session }, error: sessionError } = await Promise.race([
+          sessionPromise, 
+          timeoutPromise
+        ]) as any;
         
         if (sessionError) throw sessionError;
         
@@ -97,6 +117,59 @@ const App: React.FC = () => {
           console.log('🔍 Session found, loading profile...');
           const profile = await getProfile(client, session.user.id);
           
+          if (isMounted) {
+            if (profile) {
+              setUser({
+                isLoggedIn: true,
+                usageCount: profile.usage_count,
+                email: profile.email,
+                userId: session.user.id,
+                isPro: profile.is_pro || false,
+              });
+              setUsageInfo({
+                daily: profile.daily_usage ?? 0,
+                monthly: profile.monthly_usage ?? 0,
+                dailyLimit: profile.is_pro ? 100 : 10,
+                monthlyLimit: profile.is_pro ? 3000 : 200,
+              });
+            } else {
+              // 🔥 프로필 로드 실패시 세션 무효화
+              console.warn('⚠️ Profile load failed, signing out...');
+              await client.auth.signOut();
+              setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+              setUsageInfo(null);
+            }
+          }
+        } else {
+          console.log('✅ No session, continuing as Guest');
+        }
+      } catch (err) {
+        console.error('❌ Initialization failed:', err);
+        // 🔥 에러 발생시 강제 게스트 모드
+        if (isMounted) {
+          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+          setUsageInfo(null);
+        }
+      } finally {
+        // 🔥 반드시 로딩 종료
+        if (isMounted) {
+          console.log('✅ Initialization complete, loading=false');
+          setLoading(false);
+        }
+      }
+    };
+
+    initializeAuth();
+
+    // 🔥 Auth 상태 변경 리스너 (초기화 후에만 작동)
+    const setupAuthListener = async () => {
+      const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
+        console.log('🔍 Auth State Change:', event);
+        
+        if (!isMounted) return;
+
+        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+          const profile = await getProfile(client, session.user.id);
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
@@ -112,50 +185,24 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
             });
           }
-        } else {
-          console.log('✅ No session, continuing as Guest');
+        } else if (event === 'SIGNED_OUT') {
+          if (isMounted) {
+            setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+            setUsageInfo(null);
+          }
         }
-      } catch (err) {
-        console.error('❌ Initialization failed:', err);
-      } finally {
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
+      });
+      
+      authSubscription = subscription;
     };
 
-    initializeAuth();
-
-    const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-      console.log('🔍 Auth State Change:', event);
-      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-        const profile = await getProfile(client, session.user.id);
-        if (isMounted && profile) {
-          setUser({
-            isLoggedIn: true,
-            usageCount: profile.usage_count,
-            email: profile.email,
-            userId: session.user.id,
-            isPro: profile.is_pro || false,
-          });
-          setUsageInfo({
-            daily: profile.daily_usage ?? 0,
-            monthly: profile.monthly_usage ?? 0,
-            dailyLimit: profile.is_pro ? 100 : 10,
-            monthlyLimit: profile.is_pro ? 3000 : 200,
-          });
-        }
-      } else if (event === 'SIGNED_OUT') {
-        if (isMounted) {
-          setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
-          setUsageInfo(null);
-        }
-      }
-    });
+    setupAuthListener();
 
     return () => { 
       isMounted = false; 
-      subscription.unsubscribe(); 
+      if (authSubscription) {
+        authSubscription.unsubscribe(); 
+      }
     };
   }, [isReady, client]);
 
@@ -216,12 +263,27 @@ const App: React.FC = () => {
 
     // ⭐ 추가: 로그인 사용자는 분석 전 세션 체크
     if (user.isLoggedIn && user.userId) {
-      const { data: { session }, error: sessionError } = await client.auth.getSession();
-      
-      if (sessionError || !session) {
-        setError('Your session has expired. Please log in again.');
-        await signOut(client);
-        setStep('login');
+      try {
+        // 🔥 타임아웃 추가
+        const sessionPromise = client.auth.getSession();
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Session check timeout')), 3000)
+        );
+        
+        const { data: { session }, error: sessionError } = await Promise.race([
+          sessionPromise,
+          timeoutPromise
+        ]) as any;
+        
+        if (sessionError || !session) {
+          setError('Your session has expired. Please log in again.');
+          await signOut(client);
+          setStep('login');
+          return;
+        }
+      } catch (err) {
+        console.error('Session check failed:', err);
+        setError('Session check failed. Please try again.');
         return;
       }
     }
@@ -278,7 +340,7 @@ const App: React.FC = () => {
       setError(message);
       setStep('input');
     }
-  }, [user, usageInfo, isReady, client, refreshSession]);
+  }, [user, usageInfo, isReady, client]);
 
   const handleReset = useCallback(() => {
     setResult(null); setInput(''); setError(null); setStep('input');
