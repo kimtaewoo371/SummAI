@@ -51,7 +51,6 @@ const RechargePage: React.FC<RechargePageProps> = ({ onBack, onLogin, onUpgrade 
     <div className="min-h-[calc(100vh-64px)] bg-white py-20 px-6">
       <div className="max-w-6xl mx-auto">
         <div className="text-center mb-20">
-          <span className="text-[10px] font-black text-gray-300 uppercase tracking-[0.4em] mb-4 block">Plan Update Required</span>
           <h1 className="text-5xl font-black text-gray-900 mb-6 tracking-tight">Keep the insights flowing.</h1>
           <p className="text-lg text-gray-500 max-w-2xl mx-auto mb-10 font-medium">
             You've reached your limit. Sign in to unlock more or upgrade for unlimited high-speed executive analysis.

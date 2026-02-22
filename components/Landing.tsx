@@ -19,9 +19,7 @@ const Landing: React.FC<LandingProps> = ({ onProcess, disabled = false }) => {
   return (
     <div className="min-h-[calc(100vh-64px)] flex items-center justify-center p-6 bg-white">
       <div className="w-full max-w-5xl text-center">
-        <span className="text-[10px] font-bold text-gray-400 uppercase tracking-[0.4em] mb-4 block">
-          Executive Assistant
-        </span>
+       
 
         <h1 className="text-6xl font-black text-gray-900 mb-6 tracking-tight leading-none">
           Stop Typing. Just Paste.
