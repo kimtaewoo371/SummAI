@@ -16,6 +16,7 @@ import {
   incrementUsageCount,
   signOut
 } from './services/supabaseClient';
+import { updateUserTimezone, formatTimeUntilMidnight } from './utils/timezone';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
 const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5분
@@ -42,6 +43,7 @@ const App: React.FC = () => {
     monthly: number;
     dailyLimit: number;
     monthlyLimit: number;
+    timezone?: string;
   } | null>(null);
 
   const [user, setUser] = useState<UserState>({
@@ -115,6 +117,18 @@ const App: React.FC = () => {
         
         if (session?.user && isMounted) {
           console.log('🔍 Session found, loading profile...');
+          
+          // ✨ 타임존 자동 설정 (백그라운드에서 실행)
+          updateUserTimezone(client, session.user.id)
+            .then(result => {
+              if (result.success) {
+                console.log(`✅ 타임존 자동 설정: ${result.timezone}`);
+              }
+            })
+            .catch(err => {
+              console.warn('⚠️ 타임존 설정 실패:', err);
+            });
+          
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted) {
@@ -131,6 +145,7 @@ const App: React.FC = () => {
                 monthly: profile.monthly_usage ?? 0,
                 dailyLimit: profile.is_pro ? 100 : 10,
                 monthlyLimit: profile.is_pro ? 3000 : 200,
+                timezone: profile.timezone || 'UTC',
               });
             } else {
               // 🔥 프로필 로드 실패시 세션 무효화
@@ -144,7 +159,9 @@ const App: React.FC = () => {
           console.log('✅ No session, continuing as Guest');
           // 🔥 비로그인 사용자: localStorage에서 오늘의 사용량 불러오기
           if (isMounted) {
-            const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const localDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+            const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
             const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
             console.log(`📊 Anonymous usage today: ${anonymousUsage}/${ANONYMOUS_DAILY_LIMIT}`);
             setUser({ 
@@ -159,7 +176,9 @@ const App: React.FC = () => {
         // 🔥 에러 발생시 강제 게스트 모드
         if (isMounted) {
           // 에러 시에도 localStorage 사용량 확인
-          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const localDate = new Date().toLocaleDateString('en-CA');
+          const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
           const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
           setUser({ 
             isLoggedIn: false, 
@@ -201,12 +220,15 @@ const App: React.FC = () => {
               monthly: profile.monthly_usage ?? 0,
               dailyLimit: profile.is_pro ? 100 : 10,
               monthlyLimit: profile.is_pro ? 3000 : 200,
+              timezone: profile.timezone || 'UTC',
             });
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
             // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
-            const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const localDate = new Date().toLocaleDateString('en-CA');
+            const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
             const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
             setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
             setUsageInfo(null);
@@ -311,7 +333,9 @@ const App: React.FC = () => {
 
     // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
-      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const localDate = new Date().toLocaleDateString('en-CA');
+      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
       if (usage >= ANONYMOUS_DAILY_LIMIT) {
         setStep('recharge');
@@ -322,7 +346,11 @@ const App: React.FC = () => {
     // 로그인 사용자 DB 기반 제한
     if (user.isLoggedIn && usageInfo) {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
-        setError(`Daily limit exceeded (${usageInfo.daily}/${usageInfo.dailyLimit}).`);
+        const resetTime = formatTimeUntilMidnight();
+        setError(
+          `일일 한도 도달 (${usageInfo.daily}/${usageInfo.dailyLimit}). ` +
+          `다음 리셋: ${resetTime} 후`
+        );
         if (!user.isPro) setStep('recharge');
         return;
       }
@@ -347,10 +375,14 @@ const App: React.FC = () => {
             monthly: updatedProfile.monthly_usage,
             dailyLimit: updatedProfile.is_pro ? 100 : 10,
             monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
+            timezone: updatedProfile.timezone || 'UTC',
           });
           setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
         } else {
-          const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+          // 비로그인 사용자: localStorage 업데이트
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const localDate = new Date().toLocaleDateString('en-CA');
+          const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
           const usage = parseInt(localStorage.getItem(todayKey) || '0');
           localStorage.setItem(todayKey, (usage + 1).toString());
           setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
@@ -372,7 +404,9 @@ const App: React.FC = () => {
     try { 
       await signOut(client); 
       // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
-      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const localDate = new Date().toLocaleDateString('en-CA');
+      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
       const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
       setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
       setUsageInfo(null);
@@ -381,7 +415,9 @@ const App: React.FC = () => {
     catch (err) { 
       console.error('Sign out error:', err);
       // ⭐ 에러나도 강제 로그아웃
-      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const localDate = new Date().toLocaleDateString('en-CA');
+      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
       const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
       setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
       setUsageInfo(null);
@@ -399,6 +435,7 @@ const App: React.FC = () => {
           monthly: profile.monthly_usage ?? 0,
           dailyLimit: 100,
           monthlyLimit: 3000,
+          timezone: profile.timezone || 'UTC',
         });
       }
     }
