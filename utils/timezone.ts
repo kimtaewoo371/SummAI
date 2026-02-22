@@ -165,9 +165,9 @@ export function formatTimeUntilMidnight(): string {
   const { hours, minutes } = getTimeUntilMidnight();
   
   if (hours > 0) {
-    return `${hours}시간 ${minutes}분`;
+    return `${hours}hours ${minutes}minutes`;
   }
-  return `${minutes}분`;
+  return `${minutes}minutes`;
 }
 
 /**
@@ -175,14 +175,14 @@ export function formatTimeUntilMidnight(): string {
  */
 export function formatTimezone(timezone: string): string {
   const cityMap: Record<string, string> = {
-    'Asia/Seoul': '서울',
-    'America/New_York': '뉴욕',
-    'America/Los_Angeles': '로스앤젤레스',
-    'Europe/London': '런던',
-    'Europe/Paris': '파리',
-    'Asia/Tokyo': '도쿄',
-    'Asia/Shanghai': '상하이',
-    'Australia/Sydney': '시드니',
+    'Asia/Seoul': 'Seoul',
+    'America/New_York': 'New York',
+    'America/Los_Angeles': 'Los Angeles',
+    'Europe/London': 'London',
+    'Europe/Paris': 'Paris',
+    'Asia/Tokyo': 'Tokyo',
+    'Asia/Shanghai': 'Shanghai',
+    'Australia/Sydney': 'Sydney',
   };
 
   return cityMap[timezone] || timezone.split('/')[1]?.replace(/_/g, ' ') || timezone;
