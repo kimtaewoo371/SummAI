@@ -205,7 +205,10 @@ const App: React.FC = () => {
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
-            setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+            // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
+            const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+            const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+            setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
             setUsageInfo(null);
           }
         }
@@ -368,14 +371,19 @@ const App: React.FC = () => {
     if (!client) return;
     try { 
       await signOut(client); 
-      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
+      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+      setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
       setUsageInfo(null);
       setStep('input'); 
     }
     catch (err) { 
       console.error('Sign out error:', err);
-      // ⭐ 추가: 에러나도 강제 로그아웃
-      setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+      // ⭐ 에러나도 강제 로그아웃
+      const todayKey = `anonymous_usage_${new Date().toISOString().slice(0, 10)}`;
+      const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+      setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
       setUsageInfo(null);
       setStep('input');
     }
