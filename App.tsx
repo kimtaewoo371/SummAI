@@ -130,27 +130,44 @@ const App: React.FC = () => {
               console.warn('⚠️ 타임존 설정 실패:', err);
             });
           
-          const profile = await getProfile(client, session.user.id);
-          
-          if (isMounted) {
-            if (profile) {
-              setUser({
-                isLoggedIn: true,
-                usageCount: profile.usage_count,
-                email: profile.email,
-                userId: session.user.id,
-                isPro: profile.is_pro || false,
-              });
-              setUsageInfo({
-                daily: profile.daily_usage ?? 0,
-                monthly: profile.monthly_usage ?? 0,
-                dailyLimit: profile.is_pro ? 100 : 10,
-                monthlyLimit: profile.is_pro ? 3000 : 200,
-                timezone: profile.timezone || 'UTC',
-              });
-            } else {
-              // 🔥 프로필 로드 실패시 세션 무효화
-              console.warn('⚠️ Profile load failed, signing out...');
+          // 🔥 프로필 로드에 타임아웃 추가 (8초로 증가)
+          try {
+            const profilePromise = getProfile(client, session.user.id);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Profile load timeout')), 8000)
+            );
+            
+            const profile = await Promise.race([profilePromise, timeoutPromise]) as any;
+            
+            if (isMounted) {
+              if (profile) {
+                console.log('✅ Profile loaded successfully');
+                setUser({
+                  isLoggedIn: true,
+                  usageCount: profile.usage_count,
+                  email: profile.email,
+                  userId: session.user.id,
+                  isPro: profile.is_pro || false,
+                });
+                setUsageInfo({
+                  daily: profile.daily_usage ?? 0,
+                  monthly: profile.monthly_usage ?? 0,
+                  dailyLimit: profile.is_pro ? 100 : 10,
+                  monthlyLimit: profile.is_pro ? 3000 : 200,
+                  timezone: profile.timezone || 'UTC',
+                });
+              } else {
+                // 🔥 프로필 로드 실패시 세션 무효화
+                console.warn('⚠️ Profile load failed, signing out...');
+                await client.auth.signOut();
+                setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
+                setUsageInfo(null);
+              }
+            }
+          } catch (profileErr) {
+            console.error('❌ Profile load error:', profileErr);
+            // 🔥 프로필 로드 에러 시 세션 무효화
+            if (isMounted) {
               await client.auth.signOut();
               setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
               setUsageInfo(null);
@@ -207,25 +224,43 @@ const App: React.FC = () => {
         if (!isMounted) return;
 
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-          const profile = await getProfile(client, session.user.id);
-          if (isMounted && profile) {
-            setUser({
-              isLoggedIn: true,
-              usageCount: profile.usage_count,
-              email: profile.email,
-              userId: session.user.id,
-              isPro: profile.is_pro || false,
-            });
-            setUsageInfo({
-              daily: profile.daily_usage ?? 0,
-              monthly: profile.monthly_usage ?? 0,
-              dailyLimit: profile.is_pro ? 100 : 10,
-              monthlyLimit: profile.is_pro ? 3000 : 200,
-              timezone: profile.timezone || 'UTC',
-            });
+          try {
+            console.log('🔍 Loading profile after auth change...');
+            
+            // 🔥 프로필 로드에 타임아웃 추가
+            const profilePromise = getProfile(client, session.user.id);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Profile load timeout')), 8000)
+            );
+            
+            const profile = await Promise.race([profilePromise, timeoutPromise]) as any;
+            
+            if (isMounted && profile) {
+              console.log('✅ Profile loaded successfully after auth change');
+              setUser({
+                isLoggedIn: true,
+                usageCount: profile.usage_count,
+                email: profile.email,
+                userId: session.user.id,
+                isPro: profile.is_pro || false,
+              });
+              setUsageInfo({
+                daily: profile.daily_usage ?? 0,
+                monthly: profile.monthly_usage ?? 0,
+                dailyLimit: profile.is_pro ? 100 : 10,
+                monthlyLimit: profile.is_pro ? 3000 : 200,
+                timezone: profile.timezone || 'UTC',
+              });
+            } else if (!profile) {
+              console.warn('⚠️ Profile not found after auth change');
+            }
+          } catch (err) {
+            console.error('❌ Profile load failed in auth listener:', err);
+            // 에러가 나도 계속 진행 (세션은 유효하므로)
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
+            console.log('🔍 Signed out, restoring anonymous usage');
             // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
             const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const localDate = new Date().toLocaleDateString('en-CA');
