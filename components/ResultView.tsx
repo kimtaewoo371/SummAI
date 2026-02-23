@@ -11,7 +11,6 @@ const ResultView: React.FC<ResultViewProps> = ({ input, result, onReset }) => {
   const copyAsEmail = () => {
     const text = `Hi Team,
 
-${result.executive_summary}
 
 ${result.suggested_reply}
 
