@@ -13,6 +13,7 @@ import { analyzeText } from './services/geminiService';
 import {
   useSupabase,
   getProfile,
+  checkUsageLimit,
   incrementUsageCount,
   signOut
 } from './services/supabaseClient';
@@ -102,18 +103,12 @@ const App: React.FC = () => {
       try {
         console.log('🔍 Fetching session...');
         
-        // 🔥 세션 조회에도 타임아웃 추가
-        const sessionPromise = client.auth.getSession();
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Session fetch timeout')), 5000)
-        );
+        const { data: { session }, error: sessionError } = await client.auth.getSession();
         
-        const { data: { session }, error: sessionError } = await Promise.race([
-          sessionPromise, 
-          timeoutPromise
-        ]) as any;
-        
-        if (sessionError) throw sessionError;
+        if (sessionError) {
+          console.warn('⚠️ Session error:', sessionError);
+          throw sessionError;
+        }
         
         if (session?.user && isMounted) {
           console.log('🔍 Session found, loading profile...');
@@ -129,10 +124,12 @@ const App: React.FC = () => {
               console.warn('⚠️ 타임존 설정 실패:', err);
             });
           
+          // 프로필 로드
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted) {
             if (profile) {
+              console.log('✅ Auth initialized with profile');
               setUser({
                 isLoggedIn: true,
                 usageCount: profile.usage_count,
@@ -148,8 +145,7 @@ const App: React.FC = () => {
                 timezone: profile.timezone || 'UTC',
               });
             } else {
-              // 🔥 프로필 로드 실패시 세션 무효화
-              console.warn('⚠️ Profile load failed, signing out...');
+              console.warn('⚠️ Profile not found, signing out...');
               await client.auth.signOut();
               setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
               setUsageInfo(null);
@@ -198,15 +194,19 @@ const App: React.FC = () => {
 
     initializeAuth();
 
-    // 🔥 Auth 상태 변경 리스너 (초기화 후에만 작동)
+    // 🔥 Auth 상태 변경 리스너
     const setupAuthListener = async () => {
       const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
         console.log('🔍 Auth State Change:', event);
         
         if (!isMounted) return;
 
-        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+        // ⭐ SIGNED_IN은 이미 초기화에서 처리했으므로 중복 제거
+        // USER_UPDATED만 처리 (프로필 변경 시)
+        if (event === 'USER_UPDATED' && session?.user) {
+          console.log('🔍 User updated, reloading profile...');
           const profile = await getProfile(client, session.user.id);
+          
           if (isMounted && profile) {
             setUser({
               isLoggedIn: true,
@@ -225,7 +225,7 @@ const App: React.FC = () => {
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
-            // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
+            console.log('🔍 Signed out, restoring anonymous usage');
             const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const localDate = new Date().toLocaleDateString('en-CA');
             const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
@@ -301,35 +301,13 @@ const App: React.FC = () => {
       return;
     }
 
+    if (!text.trim()) {
+      setError('Please enter some text to analyze');
+      return;
+    }
+
     setError(null);
     setResult(null);
-
-    // ⭐ 추가: 로그인 사용자는 분석 전 세션 체크
-    if (user.isLoggedIn && user.userId) {
-      try {
-        // 🔥 타임아웃 추가
-        const sessionPromise = client.auth.getSession();
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Session check timeout')), 3000)
-        );
-        
-        const { data: { session }, error: sessionError } = await Promise.race([
-          sessionPromise,
-          timeoutPromise
-        ]) as any;
-        
-        if (sessionError || !session) {
-          setError('Your session has expired. Please log in again.');
-          await signOut(client);
-          setStep('login');
-          return;
-        }
-      } catch (err) {
-        console.error('Session check failed:', err);
-        setError('Session check failed. Please try again.');
-        return;
-      }
-    }
 
     // 비로그인 사용자 로컬 스토리지 기반 제한
     if (!user.isLoggedIn) {
@@ -344,14 +322,47 @@ const App: React.FC = () => {
     }
 
     // 로그인 사용자 DB 기반 제한
-    if (user.isLoggedIn && usageInfo) {
-      if (usageInfo.daily >= usageInfo.dailyLimit) {
-        const resetTime = formatTimeUntilMidnight();
-        setError(
-          `Daily limit reached (${usageInfo.daily}/${usageInfo.dailyLimit}). ` +
-          `Next reset: ${resetTime} from now`
-        );
-        if (!user.isPro) setStep('recharge');
+    if (user.isLoggedIn && user.userId) {
+      try {
+        // 🔥 데이터베이스에서 최신 사용량 및 리셋 상태 확인
+        const limitCheck = await checkUsageLimit(client, user.userId);
+        
+        console.log('📊 Usage limit check:', limitCheck);
+        
+        if (!limitCheck.allowed) {
+          const reason = limitCheck.reason || 'Unknown error';
+          const message = limitCheck.message || `${reason}: ${limitCheck.daily_usage || 0}/${limitCheck.daily_limit || 0}`;
+          setError(message);
+          
+          if (!user.isPro) {
+            setStep('recharge');
+          }
+          return;
+        }
+        
+        // 🔥 리셋이 감지된 경우 UI 업데이트
+        if (limitCheck.will_reset) {
+          console.log('✅ Daily usage will be reset on this request');
+          setUsageInfo({
+            daily: 0,
+            monthly: limitCheck.monthly_usage || 0,
+            dailyLimit: limitCheck.daily_limit || 10,
+            monthlyLimit: limitCheck.monthly_limit || 200,
+            timezone: limitCheck.user_timezone || 'UTC',
+          });
+        } else {
+          // 최신 사용량으로 UI 업데이트
+          setUsageInfo({
+            daily: limitCheck.daily_usage || 0,
+            monthly: limitCheck.monthly_usage || 0,
+            dailyLimit: limitCheck.daily_limit || 10,
+            monthlyLimit: limitCheck.monthly_limit || 200,
+            timezone: limitCheck.user_timezone || 'UTC',
+          });
+        }
+      } catch (err) {
+        console.error('❌ Usage limit check failed:', err);
+        setError('Failed to check usage limit. Please try again.');
         return;
       }
     }

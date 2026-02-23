@@ -38,34 +38,37 @@ export const getCurrentUser = async (client: any) => {
 //////////////////// PROFILE ////////////////////
 
 export const getProfile = async (client: any, userId: string) => {
-  try {
-    // 타임아웃 설정 (5초)
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
-    );
+  console.log('🔍 Fetching profile for user:', userId);
+  
+  const { data, error } = await client
+    .from("profiles")
+    .select("*")
+    .eq("id", userId)
+    .single();
 
-    const fetchPromise = client
-      .from("profiles")
-      .select("*")
-      .eq("id", userId)
-      .single();
-
-    const { data, error } = await Promise.race([fetchPromise, timeoutPromise]) as any;
-
-    if (error) {
-      console.error('❌ getProfile error:', error);
-      return null;
-    }
-
-    console.log('✅ Profile loaded:', data?.email);
-    return data;
-  } catch (err) {
-    console.error('❌ getProfile exception:', err);
+  if (error) {
+    console.error('❌ Profile fetch error:', error.message);
     return null;
   }
+
+  console.log('✅ Profile fetched successfully');
+  return data;
 };
 
 //////////////////// USAGE ////////////////////
+
+// 사용 가능 여부 확인 (분석 전 호출)
+export const checkUsageLimit = async (
+  client: any,
+  userId: string
+) => {
+  const { data, error } = await client.rpc('check_usage_limit', {
+    user_id: userId
+  });
+
+  if (error) throw error;
+  return data;
+};
 
 export const incrementUsageCount = async (
   client: any,
