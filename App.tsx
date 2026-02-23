@@ -171,6 +171,7 @@ const App: React.FC = () => {
         console.error('❌ Initialization failed:', err);
         // 🔥 에러 발생시 강제 게스트 모드
         if (isMounted) {
+          // 에러 시에도 localStorage 사용량 확인
           const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
           const localDate = new Date().toLocaleDateString('en-CA');
           const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
@@ -200,13 +201,13 @@ const App: React.FC = () => {
         
         if (!isMounted) return;
 
-        // 🚀 [핵심 수정] SIGNED_IN 이벤트를 무시하지 않고 프로필을 로드함
-        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-          console.log('🔍 User signed in or updated, fetching profile...');
+        // ⭐ SIGNED_IN은 이미 초기화에서 처리했으므로 중복 제거
+        // USER_UPDATED만 처리 (프로필 변경 시)
+        if (event === 'USER_UPDATED' && session?.user) {
+          console.log('🔍 User updated, reloading profile...');
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted && profile) {
-            console.log('✅ Profile sync successful on event:', event);
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -254,7 +255,6 @@ const App: React.FC = () => {
 
     // 5분마다 세션 갱신
     sessionRefreshTimer.current = setInterval(() => {
-      console.log('⏰ Running periodic session refresh');
       refreshSession();
     }, SESSION_REFRESH_INTERVAL);
 
@@ -273,12 +273,11 @@ const App: React.FC = () => {
         
         // 5분 이상 비활성화되었으면 세션 갱신
         if (inactiveTime > SESSION_REFRESH_INTERVAL) {
-          console.log('Tab reactivated - refreshing session due to inactivity');
+          console.log('Tab reactivated - refreshing session');
           const success = await refreshSession();
           
           if (!success) {
             // 세션 갱신 실패시 재로그인 유도
-            console.error('Session refresh failed after inactivity');
             setError('Your session has expired. Please log in again.');
             await signOut(client);
             setStep('login');
@@ -307,7 +306,6 @@ const App: React.FC = () => {
       return;
     }
 
-    console.log('🚀 Starting analysis process...');
     setError(null);
     setResult(null);
 
@@ -318,7 +316,6 @@ const App: React.FC = () => {
       const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
       const usage = parseInt(localStorage.getItem(todayKey) || '0');
       if (usage >= ANONYMOUS_DAILY_LIMIT) {
-        console.warn('⚠️ Anonymous daily limit reached');
         setStep('recharge');
         return;
       }
@@ -327,11 +324,12 @@ const App: React.FC = () => {
     // 로그인 사용자 DB 기반 제한
     if (user.isLoggedIn && user.userId) {
       try {
-        console.log('📊 Checking usage limit for user:', user.userId);
+        // 🔥 데이터베이스에서 최신 사용량 및 리셋 상태 확인
         const limitCheck = await checkUsageLimit(client, user.userId);
         
+        console.log('📊 Usage limit check:', limitCheck);
+        
         if (!limitCheck.allowed) {
-          console.warn('⚠️ Usage limit reached:', limitCheck.reason);
           const reason = limitCheck.reason || 'Unknown error';
           const message = limitCheck.message || `${reason}: ${limitCheck.daily_usage || 0}/${limitCheck.daily_limit || 0}`;
           setError(message);
@@ -342,10 +340,20 @@ const App: React.FC = () => {
           return;
         }
         
+        // 🔥 리셋이 감지된 경우 UI 업데이트
         if (limitCheck.will_reset) {
-          console.log('🔄 Usage reset detected in check_usage_limit');
+          console.log('✅ Daily usage will be reset on this request');
           setUsageInfo({
             daily: 0,
+            monthly: limitCheck.monthly_usage || 0,
+            dailyLimit: limitCheck.daily_limit || 10,
+            monthlyLimit: limitCheck.monthly_limit || 200,
+            timezone: limitCheck.user_timezone || 'UTC',
+          });
+        } else {
+          // 최신 사용량으로 UI 업데이트
+          setUsageInfo({
+            daily: limitCheck.daily_usage || 0,
             monthly: limitCheck.monthly_usage || 0,
             dailyLimit: limitCheck.daily_limit || 10,
             monthlyLimit: limitCheck.monthly_limit || 200,
@@ -363,20 +371,16 @@ const App: React.FC = () => {
     setStep('processing');
 
     try {
-      console.log('🧠 Calling analyzeText service...');
       const data = await analyzeText(client, text);
 
       if (data) {
-        console.log('✅ Analysis complete');
         setResult(data);
         setStep('result');
 
         if (user.isLoggedIn && user.userId) {
-          console.log('📈 Incrementing usage count in DB...');
           const updatedProfile = await incrementUsageCount(
             client, user.userId, text.length, data.resultText?.length || 0, 0
           );
-          
           setUsageInfo({
             daily: updatedProfile.daily_usage,
             monthly: updatedProfile.monthly_usage,
@@ -393,45 +397,46 @@ const App: React.FC = () => {
           const usage = parseInt(localStorage.getItem(todayKey) || '0');
           localStorage.setItem(todayKey, (usage + 1).toString());
           setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
-          console.log('📈 Anonymous usage incremented in localStorage');
         }
       }
     } catch (err) {
-      console.error('❌ Process error:', err);
       const message = err instanceof Error ? err.message : 'Analysis failed';
       setError(message);
       setStep('input');
     }
-  }, [user, isReady, client]);
+  }, [user, usageInfo, isReady, client]);
 
   const handleReset = useCallback(() => {
-    console.log('🔄 Resetting app state to input');
     setResult(null); setInput(''); setError(null); setStep('input');
   }, []);
 
   const handleSignOut = async () => {
     if (!client) return;
     try { 
-      console.log('🚪 Signing out...');
       await signOut(client); 
-      
+      // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
       const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
       const localDate = new Date().toLocaleDateString('en-CA');
       const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
       const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-      
       setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
       setUsageInfo(null);
       setStep('input'); 
     }
     catch (err) { 
       console.error('Sign out error:', err);
+      // ⭐ 에러나도 강제 로그아웃
+      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const localDate = new Date().toLocaleDateString('en-CA');
+      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
+      const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
+      setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
+      setUsageInfo(null);
       setStep('input');
     }
   };
 
   const handlePaymentSuccess = useCallback(async (_subscriptionId: string) => {
-    console.log('💰 Payment success callback triggered');
     if (client && user.userId) {
       const profile = await getProfile(client, user.userId);
       if (profile) {
@@ -439,8 +444,8 @@ const App: React.FC = () => {
         setUsageInfo({
           daily: profile.daily_usage ?? 0,
           monthly: profile.monthly_usage ?? 0,
-          dailyLimit: profile.is_pro ? 100 : 10,
-          monthlyLimit: profile.is_pro ? 3000 : 200,
+          dailyLimit: 100,
+          monthlyLimit: 3000,
           timezone: profile.timezone || 'UTC',
         });
       }
@@ -462,7 +467,6 @@ const App: React.FC = () => {
     ? Math.max(0, ANONYMOUS_DAILY_LIMIT - user.usageCount)
     : null;
 
-  // ─── 렌더링 영역 ───
   return (
     <PayPalScriptProvider options={paypalOptions}>
       <div className="min-h-screen text-gray-900 font-sans bg-white">
