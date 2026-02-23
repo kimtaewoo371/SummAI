@@ -201,10 +201,9 @@ const App: React.FC = () => {
         
         if (!isMounted) return;
 
-        // ⭐ SIGNED_IN은 이미 초기화에서 처리했으므로 중복 제거
-        // USER_UPDATED만 처리 (프로필 변경 시)
-        if (event === 'USER_UPDATED' && session?.user) {
-          console.log('🔍 User updated, reloading profile...');
+        // 🚨 [병합 포인트] SIGNED_IN 이벤트 시 프로필을 즉시 동기화하도록 복구
+        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+          console.log('🔍 User logged in or updated, reloading profile...');
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted && profile) {
@@ -222,6 +221,7 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
               timezone: profile.timezone || 'UTC',
             });
+            setStep('input'); // 로그인 반영 후 입력 화면으로 전환
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
