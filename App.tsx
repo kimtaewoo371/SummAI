@@ -13,6 +13,7 @@ import { analyzeText } from './services/geminiService';
 import {
   useSupabase,
   getProfile,
+  checkUsageLimit,
   incrementUsageCount,
   signOut
 } from './services/supabaseClient';
@@ -344,14 +345,47 @@ const App: React.FC = () => {
     }
 
     // 로그인 사용자 DB 기반 제한
-    if (user.isLoggedIn && usageInfo) {
-      if (usageInfo.daily >= usageInfo.dailyLimit) {
-        const resetTime = formatTimeUntilMidnight();
-        setError(
-          `Daily limit reached (${usageInfo.daily}/${usageInfo.dailyLimit}). ` +
-          `Next reset: ${resetTime} from now`
-        );
-        if (!user.isPro) setStep('recharge');
+    if (user.isLoggedIn && user.userId) {
+      try {
+        // 🔥 데이터베이스에서 최신 사용량 및 리셋 상태 확인
+        const limitCheck = await checkUsageLimit(client, user.userId);
+        
+        console.log('📊 Usage limit check:', limitCheck);
+        
+        if (!limitCheck.allowed) {
+          const reason = limitCheck.reason || 'Unknown error';
+          const message = limitCheck.message || `${reason}: ${limitCheck.daily_usage || 0}/${limitCheck.daily_limit || 0}`;
+          setError(message);
+          
+          if (!user.isPro) {
+            setStep('recharge');
+          }
+          return;
+        }
+        
+        // 🔥 리셋이 감지된 경우 UI 업데이트
+        if (limitCheck.will_reset) {
+          console.log('✅ Daily usage will be reset on this request');
+          setUsageInfo({
+            daily: 0,
+            monthly: limitCheck.monthly_usage || 0,
+            dailyLimit: limitCheck.daily_limit || 10,
+            monthlyLimit: limitCheck.monthly_limit || 200,
+            timezone: limitCheck.user_timezone || 'UTC',
+          });
+        } else {
+          // 최신 사용량으로 UI 업데이트
+          setUsageInfo({
+            daily: limitCheck.daily_usage || 0,
+            monthly: limitCheck.monthly_usage || 0,
+            dailyLimit: limitCheck.daily_limit || 10,
+            monthlyLimit: limitCheck.monthly_limit || 200,
+            timezone: limitCheck.user_timezone || 'UTC',
+          });
+        }
+      } catch (err) {
+        console.error('❌ Usage limit check failed:', err);
+        setError('Failed to check usage limit. Please try again.');
         return;
       }
     }
