@@ -348,8 +348,8 @@ const App: React.FC = () => {
       if (usageInfo.daily >= usageInfo.dailyLimit) {
         const resetTime = formatTimeUntilMidnight();
         setError(
-          `일일 한도 도달 (${usageInfo.daily}/${usageInfo.dailyLimit}). ` +
-          `다음 리셋: ${resetTime} 후`
+          `Daily limit reached (${usageInfo.daily}/${usageInfo.dailyLimit}). ` +
+          `Next reset: ${resetTime} from now`
         );
         if (!user.isPro) setStep('recharge');
         return;
