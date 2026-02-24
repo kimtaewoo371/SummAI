@@ -37,8 +37,19 @@ export const getCurrentUser = async (client: any) => {
 
 //////////////////// PROFILE ////////////////////
 
+// 간단한 캐시 (동일 유저 ID에 대한 짧은 시간 내 중복 호출 방지)
+const profileCache = new Map<string, { data: any; timestamp: number }>();
+const CACHE_TTL = 2000; // 2초
+
 export const getProfile = async (client: any, userId: string) => {
   console.log('🔍 Fetching profile for user:', userId);
+  
+  // 캐시 확인
+  const cached = profileCache.get(userId);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    console.log('✅ Profile returned from cache');
+    return cached.data;
+  }
   
   const { data, error } = await client
     .from("profiles")
@@ -51,7 +62,13 @@ export const getProfile = async (client: any, userId: string) => {
     return null;
   }
 
-  console.log('✅ Profile fetched successfully');
+  console.log('✅ Profile fetched from database');
+  
+  // 캐시 저장
+  if (data) {
+    profileCache.set(userId, { data, timestamp: Date.now() });
+  }
+  
   return data;
 };
 

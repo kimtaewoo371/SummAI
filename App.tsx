@@ -201,13 +201,13 @@ const App: React.FC = () => {
         
         if (!isMounted) return;
 
-        // ⭐ SIGNED_IN은 이미 초기화에서 처리했으므로 중복 제거
-        // USER_UPDATED만 처리 (프로필 변경 시)
-        if (event === 'USER_UPDATED' && session?.user) {
-          console.log('🔍 User updated, reloading profile...');
+        // ⭐ SIGNED_IN과 USER_UPDATED 모두 처리 (로그인 즉시 반영)
+        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+          console.log('🔍 Auth event:', event, '- reloading profile...');
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted && profile) {
+            console.log('✅ Profile loaded after auth event');
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
