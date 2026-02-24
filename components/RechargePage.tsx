@@ -53,7 +53,7 @@ const RechargePage: React.FC<RechargePageProps> = ({ onBack, onLogin, onUpgrade 
         <div className="text-center mb-20">
           <h1 className="text-5xl font-black text-gray-900 mb-6 tracking-tight">Keep the insights flowing.</h1>
           <p className="text-lg text-gray-500 max-w-2xl mx-auto mb-10 font-medium">
-            You've reached your limit. Sign in to unlock more or upgrade for unlimited high-speed executive analysis.
+            unlock more or upgrade for unlimited high-speed executive analysis.
           </p>
           <div className="flex justify-center gap-4">
             <button
