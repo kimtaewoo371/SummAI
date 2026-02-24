@@ -102,7 +102,6 @@ const App: React.FC = () => {
     const initializeAuth = async () => {
       try {
         console.log('🔍 Fetching session...');
-        
         const { data: { session }, error: sessionError } = await client.auth.getSession();
         
         if (sessionError) {
@@ -113,23 +112,16 @@ const App: React.FC = () => {
         if (session?.user && isMounted) {
           console.log('🔍 Session found, loading profile...');
           
-          // ✨ 타임존 자동 설정 (백그라운드에서 실행)
-          updateUserTimezone(client, session.user.id)
-            .then(result => {
-              if (result.success) {
-                console.log(`✅ 타임존 자동 설정: ${result.timezone}`);
-              }
-            })
-            .catch(err => {
-              console.warn('⚠️ 타임존 설정 실패:', err);
-            });
+          // ✨ 타임존 자동 설정 (백그라운드)
+          updateUserTimezone(client, session.user.id).catch(err => {
+            console.warn('⚠️ 타임존 설정 실패:', err);
+          });
           
-          // 프로필 로드
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted) {
             if (profile) {
-              console.log('✅ Auth initialized with profile');
+              console.log('✅ Profile loaded');
               setUser({
                 isLoggedIn: true,
                 usageCount: profile.usage_count,
@@ -145,21 +137,19 @@ const App: React.FC = () => {
                 timezone: profile.timezone || 'UTC',
               });
             } else {
-              console.warn('⚠️ Profile not found, signing out...');
+              console.warn('⚠️ Profile not found');
               await client.auth.signOut();
               setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
               setUsageInfo(null);
             }
           }
         } else {
-          console.log('✅ No session, continuing as Guest');
-          // 🔥 비로그인 사용자: localStorage에서 오늘의 사용량 불러오기
+          console.log('✅ No session, Guest mode');
           if (isMounted) {
             const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const localDate = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
+            const localDate = new Date().toLocaleDateString('en-CA');
             const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
             const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-            console.log(`📊 Anonymous usage today: ${anonymousUsage}/${ANONYMOUS_DAILY_LIMIT}`);
             setUser({ 
               isLoggedIn: false, 
               usageCount: anonymousUsage, 
@@ -168,10 +158,8 @@ const App: React.FC = () => {
           }
         }
       } catch (err) {
-        console.error('❌ Initialization failed:', err);
-        // 🔥 에러 발생시 강제 게스트 모드
+        console.error('❌ Initialization error:', err);
         if (isMounted) {
-          // 에러 시에도 localStorage 사용량 확인
           const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
           const localDate = new Date().toLocaleDateString('en-CA');
           const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
@@ -184,9 +172,8 @@ const App: React.FC = () => {
           setUsageInfo(null);
         }
       } finally {
-        // 🔥 반드시 로딩 종료
         if (isMounted) {
-          console.log('✅ Initialization complete, loading=false');
+          console.log('✅ Init complete');
           setLoading(false);
         }
       }
@@ -194,20 +181,17 @@ const App: React.FC = () => {
 
     initializeAuth();
 
-    // 🔥 Auth 상태 변경 리스너
+    // Auth 리스너
     const setupAuthListener = async () => {
       const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-        console.log('🔍 Auth State Change:', event);
+        console.log('🔍 Auth event:', event);
         
         if (!isMounted) return;
 
-        // ⭐ SIGNED_IN과 USER_UPDATED 모두 처리 (로그인 즉시 반영)
         if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-          console.log('🔍 Auth event:', event, '- reloading profile...');
           const profile = await getProfile(client, session.user.id);
           
           if (isMounted && profile) {
-            console.log('✅ Profile loaded after auth event');
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -225,7 +209,6 @@ const App: React.FC = () => {
           }
         } else if (event === 'SIGNED_OUT') {
           if (isMounted) {
-            console.log('🔍 Signed out, restoring anonymous usage');
             const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             const localDate = new Date().toLocaleDateString('en-CA');
             const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
