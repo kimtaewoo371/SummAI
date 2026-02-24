@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { PayPalScriptProvider } from "@paypal/react-paypal-js";
 
 import { AppStep, AnalysisResult, UserState } from './types';
@@ -17,10 +17,9 @@ import {
   incrementUsageCount,
   signOut
 } from './services/supabaseClient';
-import { updateUserTimezone, formatTimeUntilMidnight } from './utils/timezone';
+import { updateUserTimezone } from './utils/timezone';
 
 const ANONYMOUS_DAILY_LIMIT = 10;
-const SESSION_REFRESH_INTERVAL = 5 * 60 * 1000; // 5분
 
 const App: React.FC = () => {
   const { client, isReady } = useSupabase();
@@ -36,7 +35,6 @@ const App: React.FC = () => {
   const [input, setInput] = useState<string>('');
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
-  
   const [loading, setLoading] = useState<boolean>(true);
 
   const [usageInfo, setUsageInfo] = useState<{
@@ -53,145 +51,23 @@ const App: React.FC = () => {
     isPro: false,
   });
 
-  // ⭐ 추가: 세션 관리용
-  const sessionRefreshTimer = useRef<NodeJS.Timeout | null>(null);
-  const lastActivityTime = useRef<number>(Date.now());
-
-  // ⭐ 추가: 세션 갱신 함수
-  const refreshSession = useCallback(async () => {
-    if (!client) return false;
-    
-    try {
-      // 🔥 타임아웃 추가
-      const refreshPromise = client.auth.refreshSession();
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error('Session refresh timeout')), 5000)
-      );
-      
-      const { data: { session }, error } = await Promise.race([
-        refreshPromise,
-        timeoutPromise
-      ]) as any;
-      
-      if (error) {
-        console.warn('Session refresh failed:', error);
-        return false;
-      }
-      
-      if (session?.user) {
-        console.log('Session refreshed successfully');
-        return true;
-      }
-    } catch (err) {
-      console.error('Session refresh error:', err);
-    }
-    return false;
-  }, [client]);
-
-  // ─── 초기 인증 & 프로필 로드 ───
+  // 초기화
   useEffect(() => {
-    console.log('🔍 App useEffect - isReady:', isReady, 'client:', !!client);
-    
-    if (!isReady || !client) { 
-      return; 
-    }
+    if (!isReady || !client) return;
 
     let isMounted = true;
-    let authSubscription: any = null;
+    let authSub: any = null;
 
-    const initializeAuth = async () => {
+    const init = async () => {
       try {
-        console.log('🔍 Fetching session...');
-        const { data: { session }, error: sessionError } = await client.auth.getSession();
-        
-        if (sessionError) {
-          console.warn('⚠️ Session error:', sessionError);
-          throw sessionError;
-        }
+        const { data: { session } } = await client.auth.getSession();
         
         if (session?.user && isMounted) {
-          console.log('🔍 Session found, loading profile...');
-          
-          // ✨ 타임존 자동 설정 (백그라운드)
-          updateUserTimezone(client, session.user.id).catch(err => {
-            console.warn('⚠️ 타임존 설정 실패:', err);
-          });
+          updateUserTimezone(client, session.user.id).catch(() => {});
           
           const profile = await getProfile(client, session.user.id);
           
-          if (isMounted) {
-            if (profile) {
-              console.log('✅ Profile loaded');
-              setUser({
-                isLoggedIn: true,
-                usageCount: profile.usage_count,
-                email: profile.email,
-                userId: session.user.id,
-                isPro: profile.is_pro || false,
-              });
-              setUsageInfo({
-                daily: profile.daily_usage ?? 0,
-                monthly: profile.monthly_usage ?? 0,
-                dailyLimit: profile.is_pro ? 100 : 10,
-                monthlyLimit: profile.is_pro ? 3000 : 200,
-                timezone: profile.timezone || 'UTC',
-              });
-            } else {
-              console.warn('⚠️ Profile not found');
-              await client.auth.signOut();
-              setUser({ isLoggedIn: false, usageCount: 0, isPro: false });
-              setUsageInfo(null);
-            }
-          }
-        } else {
-          console.log('✅ No session, Guest mode');
-          if (isMounted) {
-            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const localDate = new Date().toLocaleDateString('en-CA');
-            const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-            const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-            setUser({ 
-              isLoggedIn: false, 
-              usageCount: anonymousUsage, 
-              isPro: false 
-            });
-          }
-        }
-      } catch (err) {
-        console.error('❌ Initialization error:', err);
-        if (isMounted) {
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          const localDate = new Date().toLocaleDateString('en-CA');
-          const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-          const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-          setUser({ 
-            isLoggedIn: false, 
-            usageCount: anonymousUsage, 
-            isPro: false 
-          });
-          setUsageInfo(null);
-        }
-      } finally {
-        if (isMounted) {
-          console.log('✅ Init complete');
-          setLoading(false);
-        }
-      }
-    };
-
-    initializeAuth();
-
-    // Auth 리스너
-    const setupAuthListener = async () => {
-      const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
-        console.log('🔍 Auth event:', event);
-        
-        if (!isMounted) return;
-
-        if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
-          const profile = await getProfile(client, session.user.id);
-          
-          if (isMounted && profile) {
+          if (profile && isMounted) {
             setUser({
               isLoggedIn: true,
               usageCount: profile.usage_count,
@@ -206,126 +82,115 @@ const App: React.FC = () => {
               monthlyLimit: profile.is_pro ? 3000 : 200,
               timezone: profile.timezone || 'UTC',
             });
+          } else if (isMounted) {
+            await client.auth.signOut();
+            const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+            const date = new Date().toLocaleDateString('en-CA');
+            const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+            const anon = parseInt(localStorage.getItem(key) || '0');
+            setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
           }
-        } else if (event === 'SIGNED_OUT') {
-          if (isMounted) {
-            const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-            const localDate = new Date().toLocaleDateString('en-CA');
-            const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-            const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-            setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
-            setUsageInfo(null);
-          }
+        } else if (isMounted) {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const date = new Date().toLocaleDateString('en-CA');
+          const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+          const anon = parseInt(localStorage.getItem(key) || '0');
+          setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
         }
-      });
-      
-      authSubscription = subscription;
+      } catch (err) {
+        console.error('Init error:', err);
+        if (isMounted) {
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const date = new Date().toLocaleDateString('en-CA');
+          const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+          const anon = parseInt(localStorage.getItem(key) || '0');
+          setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
+        }
+      } finally {
+        if (isMounted) setLoading(false);
+      }
     };
 
-    setupAuthListener();
+    init();
 
-    return () => { 
-      isMounted = false; 
-      if (authSubscription) {
-        authSubscription.unsubscribe(); 
+    const { data: { subscription } } = client.auth.onAuthStateChange(async (event, session) => {
+      if (!isMounted) return;
+
+      if ((event === 'SIGNED_IN' || event === 'USER_UPDATED') && session?.user) {
+        const profile = await getProfile(client, session.user.id);
+        if (profile && isMounted) {
+          setUser({
+            isLoggedIn: true,
+            usageCount: profile.usage_count,
+            email: profile.email,
+            userId: session.user.id,
+            isPro: profile.is_pro || false,
+          });
+          setUsageInfo({
+            daily: profile.daily_usage ?? 0,
+            monthly: profile.monthly_usage ?? 0,
+            dailyLimit: profile.is_pro ? 100 : 10,
+            monthlyLimit: profile.is_pro ? 3000 : 200,
+            timezone: profile.timezone || 'UTC',
+          });
+        }
+      } else if (event === 'SIGNED_OUT' && isMounted) {
+        const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+        const date = new Date().toLocaleDateString('en-CA');
+        const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+        const anon = parseInt(localStorage.getItem(key) || '0');
+        setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
+        setUsageInfo(null);
       }
+    });
+
+    authSub = subscription;
+
+    return () => {
+      isMounted = false;
+      if (authSub) authSub.unsubscribe();
     };
   }, [isReady, client]);
 
-  // ⭐ 추가: 주기적 세션 체크 (로그인 상태일 때만)
-  useEffect(() => {
-    if (!client || !user.isLoggedIn) return;
-
-    // 5분마다 세션 갱신
-    sessionRefreshTimer.current = setInterval(() => {
-      refreshSession();
-    }, SESSION_REFRESH_INTERVAL);
-
-    return () => {
-      if (sessionRefreshTimer.current) {
-        clearInterval(sessionRefreshTimer.current);
-      }
-    };
-  }, [client, user.isLoggedIn, refreshSession]);
-
-  // ⭐ 추가: 탭 재활성화시 세션 복구
-  useEffect(() => {
-    const handleVisibilityChange = async () => {
-      if (!document.hidden && client && user.isLoggedIn) {
-        const inactiveTime = Date.now() - lastActivityTime.current;
-        
-        // 5분 이상 비활성화되었으면 세션 갱신
-        if (inactiveTime > SESSION_REFRESH_INTERVAL) {
-          console.log('Tab reactivated - refreshing session');
-          const success = await refreshSession();
-          
-          if (!success) {
-            // 세션 갱신 실패시 재로그인 유도
-            setError('Your session has expired. Please log in again.');
-            await signOut(client);
-            setStep('login');
-          }
-        }
-        
-        lastActivityTime.current = Date.now();
-      }
-    };
-
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [client, user.isLoggedIn, refreshSession]);
-
   const handleProcess = useCallback(async (text: string) => {
     if (!isReady || !client) {
-      setError('System is initializing. Please wait...');
+      setError('System initializing...');
       return;
     }
 
     if (!text.trim()) {
-      setError('Please enter some text to analyze');
+      setError('Please enter text');
       return;
     }
 
     setError(null);
     setResult(null);
 
-    // 비로그인 사용자 로컬 스토리지 기반 제한
+    // 비로그인 제한
     if (!user.isLoggedIn) {
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const localDate = new Date().toLocaleDateString('en-CA');
-      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-      const usage = parseInt(localStorage.getItem(todayKey) || '0');
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const date = new Date().toLocaleDateString('en-CA');
+      const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+      const usage = parseInt(localStorage.getItem(key) || '0');
       if (usage >= ANONYMOUS_DAILY_LIMIT) {
         setStep('recharge');
         return;
       }
     }
 
-    // 로그인 사용자 DB 기반 제한
+    // 로그인 제한
     if (user.isLoggedIn && user.userId) {
       try {
-        // 🔥 데이터베이스에서 최신 사용량 및 리셋 상태 확인
         const limitCheck = await checkUsageLimit(client, user.userId);
         
-        console.log('📊 Usage limit check:', limitCheck);
-        
         if (!limitCheck.allowed) {
-          const reason = limitCheck.reason || 'Unknown error';
-          const message = limitCheck.message || `${reason}: ${limitCheck.daily_usage || 0}/${limitCheck.daily_limit || 0}`;
-          setError(message);
-          
-          if (!user.isPro) {
-            setStep('recharge');
-          }
+          const msg = limitCheck.message || `${limitCheck.reason}: ${limitCheck.daily_usage}/${limitCheck.daily_limit}`;
+          setError(msg);
+          if (!user.isPro) setStep('recharge');
           return;
         }
         
-        // 🔥 리셋이 감지된 경우 UI 업데이트
         if (limitCheck.will_reset) {
-          console.log('✅ Daily usage will be reset on this request');
           setUsageInfo({
             daily: 0,
             monthly: limitCheck.monthly_usage || 0,
@@ -334,7 +199,6 @@ const App: React.FC = () => {
             timezone: limitCheck.user_timezone || 'UTC',
           });
         } else {
-          // 최신 사용량으로 UI 업데이트
           setUsageInfo({
             daily: limitCheck.daily_usage || 0,
             monthly: limitCheck.monthly_usage || 0,
@@ -344,8 +208,8 @@ const App: React.FC = () => {
           });
         }
       } catch (err) {
-        console.error('❌ Usage limit check failed:', err);
-        setError('Failed to check usage limit. Please try again.');
+        console.error('Limit check failed:', err);
+        setError('Failed to check limit');
         return;
       }
     }
@@ -361,59 +225,58 @@ const App: React.FC = () => {
         setStep('result');
 
         if (user.isLoggedIn && user.userId) {
-          const updatedProfile = await incrementUsageCount(
+          const updated = await incrementUsageCount(
             client, user.userId, text.length, data.resultText?.length || 0, 0
           );
           setUsageInfo({
-            daily: updatedProfile.daily_usage,
-            monthly: updatedProfile.monthly_usage,
-            dailyLimit: updatedProfile.is_pro ? 100 : 10,
-            monthlyLimit: updatedProfile.is_pro ? 3000 : 200,
-            timezone: updatedProfile.timezone || 'UTC',
+            daily: updated.daily_usage,
+            monthly: updated.monthly_usage,
+            dailyLimit: updated.is_pro ? 100 : 10,
+            monthlyLimit: updated.is_pro ? 3000 : 200,
+            timezone: updated.timezone || 'UTC',
           });
-          setUser(prev => ({ ...prev, usageCount: updatedProfile.daily_usage }));
+          setUser(prev => ({ ...prev, usageCount: updated.daily_usage }));
         } else {
-          // 비로그인 사용자: localStorage 업데이트
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          const localDate = new Date().toLocaleDateString('en-CA');
-          const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-          const usage = parseInt(localStorage.getItem(todayKey) || '0');
-          localStorage.setItem(todayKey, (usage + 1).toString());
+          const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          const date = new Date().toLocaleDateString('en-CA');
+          const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+          const usage = parseInt(localStorage.getItem(key) || '0');
+          localStorage.setItem(key, (usage + 1).toString());
           setUser(prev => ({ ...prev, usageCount: prev.usageCount + 1 }));
         }
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Analysis failed';
-      setError(message);
+      const msg = err instanceof Error ? err.message : 'Analysis failed';
+      setError(msg);
       setStep('input');
     }
   }, [user, usageInfo, isReady, client]);
 
   const handleReset = useCallback(() => {
-    setResult(null); setInput(''); setError(null); setStep('input');
+    setResult(null);
+    setInput('');
+    setError(null);
+    setStep('input');
   }, []);
 
   const handleSignOut = async () => {
     if (!client) return;
-    try { 
-      await signOut(client); 
-      // 🔥 로그아웃 시 localStorage에서 오늘의 익명 사용량 복원
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const localDate = new Date().toLocaleDateString('en-CA');
-      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-      const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-      setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
+    try {
+      await signOut(client);
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const date = new Date().toLocaleDateString('en-CA');
+      const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+      const anon = parseInt(localStorage.getItem(key) || '0');
+      setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
       setUsageInfo(null);
-      setStep('input'); 
-    }
-    catch (err) { 
+      setStep('input');
+    } catch (err) {
       console.error('Sign out error:', err);
-      // ⭐ 에러나도 강제 로그아웃
-      const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-      const localDate = new Date().toLocaleDateString('en-CA');
-      const todayKey = `anonymous_usage_${localDate}_${timezone.replace(/\//g, '-')}`;
-      const anonymousUsage = parseInt(localStorage.getItem(todayKey) || '0');
-      setUser({ isLoggedIn: false, usageCount: anonymousUsage, isPro: false });
+      const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const date = new Date().toLocaleDateString('en-CA');
+      const key = `anonymous_usage_${date}_${tz.replace(/\//g, '-')}`;
+      const anon = parseInt(localStorage.getItem(key) || '0');
+      setUser({ isLoggedIn: false, usageCount: anon, isPro: false });
       setUsageInfo(null);
       setStep('input');
     }

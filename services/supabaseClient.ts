@@ -51,7 +51,7 @@ export const getProfile = async (client: any, userId: string) => {
     return null;
   }
 
-  console.log('✅ Profile fetched from database');
+  console.log('✅ Profile fetched successfully');
   return data;
 };
 
