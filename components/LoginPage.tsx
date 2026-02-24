@@ -61,8 +61,9 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess, onBack }) => {
         // 🔥 수정: 첫 번째 인자로 client를 반드시 전달해야 함
         await signin(client, email, password);
         setSuccess('Login successful!');
+        // 🔥 로그인 성공 시 자동 새로고침
         setTimeout(() => {
-          onLoginSuccess();
+          window.location.reload();
         }, 500);
       }
     } catch (err: any) {
