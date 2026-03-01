@@ -21,7 +21,7 @@ Best regards,
   };
 
   const copyAsSlack = () => {
-    const text = `${result.executive_summary}\n\n*Action Items:*\n${result.action_items.map(i => `• ${i.task} (${i.owner} by ${i.deadline})`).join('\n')}`;
+    const text = result.suggested_reply;
     navigator.clipboard.writeText(text);
     alert('Copied as Slack Note!');
   };
