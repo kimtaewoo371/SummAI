@@ -8,6 +8,7 @@ export interface AnalysisResult {
   executive_summary: string;
   action_items: ActionItem[];
   suggested_reply: string;
+  suggested_reply_slack: string;
   resultText?: string;
   outputLength?: number;
 }
