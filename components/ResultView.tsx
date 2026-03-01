@@ -18,7 +18,7 @@ Best regards,
   };
 
   const copyAsSlack = () => {
-    const text = result.suggested_reply_slack;
+    const text = result.suggested_reply;
     navigator.clipboard.writeText(text);
     alert('Copied as Slack Note!');
   };

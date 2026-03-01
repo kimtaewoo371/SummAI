@@ -35,12 +35,11 @@ export const analyzeText = async (client: any, text: string): Promise<AnalysisRe
     }
 
     return {
-      executive_summary:    data.executive_summary,
-      action_items:         data.action_items,
-      suggested_reply:      data.suggested_reply,
-      suggested_reply_slack: data.suggested_reply_slack ?? '',
-      resultText:           data.resultText,
-      outputLength:         data.outputLength,
+      executive_summary: data.executive_summary,
+      action_items:      data.action_items,
+      suggested_reply:   data.suggested_reply,
+      resultText:        data.resultText,
+      outputLength:      data.outputLength,
     };
 
   } catch (error) {
