@@ -9,10 +9,7 @@ interface ResultViewProps {
 
 const ResultView: React.FC<ResultViewProps> = ({ input, result, onReset }) => {
   const copyAsEmail = () => {
-    const text = `Hi Team,
-
-
-${result.suggested_reply}
+    const text = `${result.suggested_reply}
 
 Best regards,
 [Your Name]`;
